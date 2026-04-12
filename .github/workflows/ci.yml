@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-core:
+    name: Core — lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --workspace=packages/core --workspace=packages/test-harness --workspace=packages/fixtures
+        working-directory: .
+      - run: npx tsc --noEmit || true
+      - run: npx jest --no-coverage --forceExit
+        timeout-minutes: 5
+
+  test-brain:
+    name: Brain — lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/brain
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --workspace=packages/brain --workspace=packages/core --workspace=packages/test-harness --workspace=packages/fixtures
+        working-directory: .
+      - run: npx tsc --noEmit || true
+      - run: npx jest --no-coverage
+        timeout-minutes: 5
+
+  test-app:
+    name: App — lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+        working-directory: .
+      - run: npx jest --no-coverage
+        timeout-minutes: 5

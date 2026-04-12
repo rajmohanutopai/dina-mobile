@@ -1,0 +1,88 @@
+/**
+ * LLM Provider interface — common contract for all LLM adapters.
+ *
+ * All adapters (Claude, OpenAI, Gemini, OpenRouter) implement this
+ * interface. The router selects the provider; the adapter handles
+ * the SDK-specific details.
+ *
+ * Source: ARCHITECTURE.md Tasks 3.3–3.6
+ */
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ChatResponse {
+  content: string;
+  toolCalls: ToolCall[];
+  model: string;
+  usage: { inputTokens: number; outputTokens: number };
+  finishReason: 'end' | 'tool_use' | 'max_tokens' | 'error';
+}
+
+export interface StreamChunk {
+  type: 'text' | 'tool_use' | 'done' | 'error';
+  text?: string;
+  toolCall?: ToolCall;
+  error?: string;
+}
+
+export interface EmbedResponse {
+  embedding: Float64Array;
+  model: string;
+  dimensions: number;
+}
+
+/**
+ * Common LLM provider interface.
+ *
+ * All methods accept an AbortSignal for cancellation.
+ */
+export interface LLMProvider {
+  readonly name: string;
+  readonly supportsStreaming: boolean;
+  readonly supportsToolCalling: boolean;
+  readonly supportsEmbedding: boolean;
+
+  /** Send a chat completion request. */
+  chat(
+    messages: ChatMessage[],
+    options?: ChatOptions,
+  ): Promise<ChatResponse>;
+
+  /** Stream a chat completion. Yields chunks as they arrive. */
+  stream(
+    messages: ChatMessage[],
+    options?: ChatOptions,
+  ): AsyncIterable<StreamChunk>;
+
+  /** Generate an embedding vector from text. */
+  embed(text: string, options?: EmbedOptions): Promise<EmbedResponse>;
+}
+
+export interface ChatOptions {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  tools?: ToolDefinition[];
+  systemPrompt?: string;
+  signal?: AbortSignal;
+}
+
+export interface EmbedOptions {
+  model?: string;
+  dimensions?: number;
+  signal?: AbortSignal;
+}
