@@ -18,6 +18,7 @@ import { unsealRPCRequest, type CoreRPCRequest } from './rpc_envelope';
 import { validateIdentityBinding } from './identity_binding';
 import { validateInnerAuth } from './rpc_envelope';
 import { appendAudit } from '../audit/service';
+import { verifyRequest } from '../auth/canonical';
 
 export interface RPCHandlerResult {
   valid: boolean;
@@ -90,7 +91,50 @@ export function handleRPCRequest(
     };
   }
 
-  // 4. Success
+  // 4. Verify inner Ed25519 signature (not just header presence)
+  if (publicKeyResolver) {
+    const senderPubKey = publicKeyResolver(request.from);
+    if (!senderPubKey) {
+      appendAudit('rpc_handler', 'rpc_auth_rejected', request.from,
+        `id=${request.request_id} reason=unknown_sender_did`);
+      return {
+        valid: false,
+        request,
+        senderDID: request.from,
+        rejectedAt: 'inner_auth',
+        reason: `Cannot resolve public key for sender DID: ${request.from}`,
+      };
+    }
+
+    // Verify the inner request signature using canonical verification
+    const bodyBytes = request.body ? new TextEncoder().encode(
+      typeof request.body === 'string' ? request.body : JSON.stringify(request.body),
+    ) : new Uint8Array(0);
+    const signatureValid = verifyRequest(
+      request.method,
+      request.path,
+      request.headers['X-Query'] ?? '',
+      request.headers['X-Timestamp'] ?? '',
+      request.headers['X-Nonce'] ?? '',
+      bodyBytes,
+      request.headers['X-Signature'] ?? '',
+      senderPubKey,
+    );
+
+    if (!signatureValid) {
+      appendAudit('rpc_handler', 'rpc_sig_rejected', request.from,
+        `id=${request.request_id} reason=invalid_signature`);
+      return {
+        valid: false,
+        request,
+        senderDID: request.from,
+        rejectedAt: 'inner_auth',
+        reason: 'Inner Ed25519 signature verification failed',
+      };
+    }
+  }
+
+  // 5. Success
   appendAudit('rpc_handler', 'rpc_accepted', request.from,
     `id=${request.request_id} method=${request.method} path=${request.path}`);
 

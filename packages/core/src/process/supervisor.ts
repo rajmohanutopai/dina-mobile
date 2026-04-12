@@ -49,10 +49,12 @@ export interface SupervisorCallbacks {
   onHealthy?: (name: string) => void;
 }
 
-const DEFAULT_HEALTH_INTERVAL_MS = 10_000; // 10 seconds
+import { HEALTH_CHECK_TIMEOUT_MS, UNHEALTHY_THRESHOLD, MS_SECOND } from '../constants';
+
+const DEFAULT_HEALTH_INTERVAL_MS = 10 * MS_SECOND;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 10;
-const DEFAULT_INITIAL_BACKOFF_MS = 1_000;
-const DEFAULT_MAX_BACKOFF_MS = 30_000;
+const DEFAULT_INITIAL_BACKOFF_MS = MS_SECOND;
+const DEFAULT_MAX_BACKOFF_MS = 30 * MS_SECOND;
 
 export class ProcessSupervisor {
   private readonly processes: Map<string, ManagedProcess> = new Map();
@@ -168,7 +170,7 @@ export class ProcessSupervisor {
 
     try {
       const response = await this.fetchFn(proc.config.healthURL, {
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
       });
       const healthy = response.ok;
       if (healthy) {
@@ -186,7 +188,7 @@ export class ProcessSupervisor {
     const proc = this.getProcess(name);
     proc.consecutiveFailures++;
 
-    if (proc.consecutiveFailures >= 3) {
+    if (proc.consecutiveFailures >= UNHEALTHY_THRESHOLD) {
       proc.state = 'crashed';
       proc.lastCrash = Date.now();
       this.callbacks.onCrash?.(name, 'Health check failed 3 consecutive times');

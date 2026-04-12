@@ -31,13 +31,18 @@ export interface ProviderStatus {
   reason: string;
 }
 
+import {
+  DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_GEMINI_MODEL,
+  DEFAULT_OPENROUTER_MODEL, DEFAULT_LOCAL_MODEL,
+} from '../constants';
+
 /** Provider defaults: model names for each provider. */
 const DEFAULT_MODELS: Record<ProviderName, string> = {
-  claude: 'claude-sonnet-4-6',
-  openai: 'gpt-4o',
-  gemini: 'gemini-2.5-flash',
-  openrouter: 'auto',
-  local: 'llama-3n',
+  claude: DEFAULT_CLAUDE_MODEL,
+  openai: DEFAULT_OPENAI_MODEL,
+  gemini: DEFAULT_GEMINI_MODEL,
+  openrouter: DEFAULT_OPENROUTER_MODEL,
+  local: DEFAULT_LOCAL_MODEL,
 };
 
 /** API key format patterns (basic validation). */

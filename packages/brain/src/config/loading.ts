@@ -4,6 +4,8 @@
  * Source: brain/tests/test_config.py
  */
 
+import { DEFAULT_CORE_URL, BRAIN_DEFAULT_PORT } from '../../../core/src/constants';
+
 export interface BrainConfig {
   coreURL: string;
   listenPort: number;
@@ -13,8 +15,8 @@ export interface BrainConfig {
 }
 
 const DEFAULTS: BrainConfig = {
-  coreURL: 'http://localhost:8100',
-  listenPort: 8200,
+  coreURL: DEFAULT_CORE_URL,
+  listenPort: BRAIN_DEFAULT_PORT,
   serviceKeyDir: './service_keys',
   logLevel: 'info',
 };

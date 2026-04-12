@@ -22,9 +22,10 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { blake2b } from '@noble/hashes/blake2.js';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { NACL_EPHEMERAL_KEY_BYTES, NACL_TAG_BYTES, ED25519_PUBLIC_KEY_BYTES } from '../constants';
 
-/** Overhead added by sealed box: 32-byte ephemeral public key + 16-byte Poly1305 tag. */
-const SEAL_OVERHEAD = 32 + 16;
+/** Overhead added by sealed box: ephemeral public key + Poly1305 tag. */
+const SEAL_OVERHEAD = NACL_EPHEMERAL_KEY_BYTES + NACL_TAG_BYTES;
 
 /**
  * Compute the NaCl crypto_box shared key from a raw X25519 shared secret.
@@ -69,7 +70,7 @@ function sealNonce(ephPub: Uint8Array, recipientPub: Uint8Array): Uint8Array {
  * @returns Sealed box: eph_pub (32) || ciphertext || Poly1305 tag (16)
  */
 export function sealEncrypt(plaintext: Uint8Array, recipientEd25519Pub: Uint8Array): Uint8Array {
-  if (!recipientEd25519Pub || recipientEd25519Pub.length !== 32) {
+  if (!recipientEd25519Pub || recipientEd25519Pub.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('nacl: recipient public key must be 32 bytes');
   }
 
@@ -112,10 +113,10 @@ export function sealDecrypt(
   if (!ciphertext || ciphertext.length < SEAL_OVERHEAD) {
     throw new Error(`nacl: ciphertext too short (need at least ${SEAL_OVERHEAD} bytes)`);
   }
-  if (!recipientEd25519Pub || recipientEd25519Pub.length !== 32) {
+  if (!recipientEd25519Pub || recipientEd25519Pub.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('nacl: recipient public key must be 32 bytes');
   }
-  if (!recipientEd25519Priv || recipientEd25519Priv.length !== 32) {
+  if (!recipientEd25519Priv || recipientEd25519Priv.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('nacl: recipient private key must be 32 bytes');
   }
 
@@ -147,7 +148,7 @@ export function sealDecrypt(
  * where y is the affine y-coordinate of the Ed25519 point.
  */
 export function ed25519PubToX25519(ed25519Pub: Uint8Array): Uint8Array {
-  if (!ed25519Pub || ed25519Pub.length !== 32) {
+  if (!ed25519Pub || ed25519Pub.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('nacl: Ed25519 public key must be 32 bytes');
   }
 
@@ -180,7 +181,7 @@ export function ed25519PubToX25519(ed25519Pub: Uint8Array): Uint8Array {
  * SHA-512(ed25519_seed)[0:32] with clamping.
  */
 export function ed25519SecToX25519(ed25519Sec: Uint8Array): Uint8Array {
-  if (!ed25519Sec || ed25519Sec.length !== 32) {
+  if (!ed25519Sec || ed25519Sec.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('nacl: Ed25519 private key must be 32 bytes');
   }
 

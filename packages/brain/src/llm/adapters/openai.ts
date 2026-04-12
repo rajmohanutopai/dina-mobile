@@ -74,10 +74,13 @@ export interface OpenAIEmbedResponse {
   usage: { prompt_tokens: number; total_tokens: number };
 }
 
-const DEFAULT_CHAT_MODEL = 'gpt-4o';
-const DEFAULT_EMBED_MODEL = 'text-embedding-3-small';
-const DEFAULT_MAX_TOKENS = 4096;
-const DEFAULT_EMBED_DIMENSIONS = 768;
+import { DEFAULT_OPENAI_MODEL, DEFAULT_EMBED_MODEL as EMBED_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+import { DEFAULT_EMBEDDING_DIMENSIONS } from '../../../../core/src/constants';
+
+const DEFAULT_CHAT_MODEL = DEFAULT_OPENAI_MODEL;
+const DEFAULT_EMBED_MODEL = EMBED_MODEL;
+const DEFAULT_MAX_TOKENS = MAX_TOKENS;
+const DEFAULT_EMBED_DIMENSIONS = DEFAULT_EMBEDDING_DIMENSIONS;
 
 export class OpenAIAdapter implements LLMProvider {
   readonly name = 'openai';

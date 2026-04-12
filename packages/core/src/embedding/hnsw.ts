@@ -41,8 +41,10 @@ interface HNSWNode {
   neighbors: Map<number, Set<string>>;  // layer → set of neighbor IDs
 }
 
-const DEFAULT_M = 16;
-const DEFAULT_EF_CONSTRUCTION = 200;
+import { HNSW_DEFAULT_M, HNSW_DEFAULT_EF_CONSTRUCTION } from '../constants';
+
+const DEFAULT_M = HNSW_DEFAULT_M;
+const DEFAULT_EF_CONSTRUCTION = HNSW_DEFAULT_EF_CONSTRUCTION;
 
 export class HNSWIndex {
   private readonly M: number;

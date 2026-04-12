@@ -53,8 +53,9 @@ export interface AnthropicMessageResponse {
   usage: { input_tokens: number; output_tokens: number };
 }
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const DEFAULT_MAX_TOKENS = 4096;
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+const DEFAULT_MODEL = DEFAULT_CLAUDE_MODEL;
+const DEFAULT_MAX_TOKENS = MAX_TOKENS;
 
 export class ClaudeAdapter implements LLMProvider {
   readonly name = 'claude';

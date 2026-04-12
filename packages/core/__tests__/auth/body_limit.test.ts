@@ -1,5 +1,5 @@
 /**
- * T2.7 — Body limit middleware: reject bodies > 1MB.
+ * T2.7 — Body limit middleware: reject bodies > 2MB.
  *
  * Source: ARCHITECTURE.md Task 2.7
  */
@@ -24,28 +24,28 @@ describe('Body Limit Middleware', () => {
       expect(checkBodyLimit('').allowed).toBe(true);
     });
 
-    it('allows exactly 1MB', () => {
-      const body = new Uint8Array(1024 * 1024); // exactly 1 MiB
+    it('allows exactly 2MB', () => {
+      const body = new Uint8Array(2_000_000);
       expect(checkBodyLimit(body).allowed).toBe(true);
     });
 
-    it('rejects body > 1MB', () => {
-      const body = new Uint8Array(1024 * 1024 + 1); // 1 MiB + 1 byte
+    it('rejects body > 2MB', () => {
+      const body = new Uint8Array(2_000_001);
       const result = checkBodyLimit(body);
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('too large');
     });
 
-    it('rejects 2MB body', () => {
-      const body = new Uint8Array(2 * 1024 * 1024);
+    it('rejects 3MB body', () => {
+      const body = new Uint8Array(3_000_000);
       const result = checkBodyLimit(body);
       expect(result.allowed).toBe(false);
-      expect(result.bodySize).toBe(2 * 1024 * 1024);
+      expect(result.bodySize).toBe(3_000_000);
     });
 
     it('includes limit in result', () => {
       const result = checkBodyLimit('small');
-      expect(result.limitBytes).toBe(1024 * 1024);
+      expect(result.limitBytes).toBe(2_000_000);
     });
 
     it('works with string bodies (UTF-8 encoded)', () => {
@@ -85,7 +85,7 @@ describe('Body Limit Middleware', () => {
     it('resetBodyLimit restores default', () => {
       setBodyLimit(100);
       resetBodyLimit();
-      expect(getBodyLimit()).toBe(1024 * 1024);
+      expect(getBodyLimit()).toBe(2_000_000);
     });
   });
 });

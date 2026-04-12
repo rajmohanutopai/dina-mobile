@@ -7,8 +7,9 @@
  * Source: core/internal/middleware/auth.go (timestamp validation)
  */
 
+import { TIMESTAMP_WINDOW_S } from '../constants';
 /** Maximum allowed timestamp drift in seconds (5 minutes). */
-export const TIMESTAMP_WINDOW_SECONDS = 300;
+export const TIMESTAMP_WINDOW_SECONDS = TIMESTAMP_WINDOW_S;
 
 // RFC3339 pattern: YYYY-MM-DDTHH:MM:SS followed by Z or ±HH:MM
 const RFC3339_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;

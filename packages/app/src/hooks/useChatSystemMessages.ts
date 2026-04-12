@@ -37,7 +37,8 @@ export interface SystemEvent {
 
 /** Event history for debugging. */
 const eventHistory: SystemEvent[] = [];
-const MAX_HISTORY = 100;
+import { SYSTEM_MESSAGE_HISTORY_MAX } from '../../../core/src/constants';
+const MAX_HISTORY = SYSTEM_MESSAGE_HISTORY_MAX;
 
 /**
  * Emit a system event — formats and adds to chat thread.

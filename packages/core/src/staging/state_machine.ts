@@ -26,8 +26,9 @@ export interface StagingTransition {
   reason?: string;
 }
 
+import { STAGING_MAX_RETRIES } from '../constants';
 /** Default maximum retry count before dead-lettering. */
-const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_MAX_RETRIES = STAGING_MAX_RETRIES;
 
 /**
  * Adjacency list: for each state, the set of valid next states.

@@ -12,11 +12,13 @@
  *   DINA_SECURITY_MODE   → securityMode (default: "security")
  *   DINA_SESSION_TTL     → sessionTTL (default: 86400)
  *   DINA_RATE_LIMIT      → rateLimit (default: 50)
- *   DINA_SPOOL_MAX       → spoolMax (default: 500)
+ *   DINA_SPOOL_MAX       → spoolMaxMBMB (default: 500, in megabytes)
  *   DINA_MSGBOX_URL      → msgboxURL (optional)
  *
  * Source: core/test/config_test.go
  */
+
+import { CORE_DEFAULT_PORT, DEFAULT_BRAIN_URL } from '../constants';
 
 export interface CoreConfig {
   listenAddr: string;
@@ -26,20 +28,20 @@ export interface CoreConfig {
   securityMode: 'security' | 'convenience';
   sessionTTL: number;
   rateLimit: number;
-  spoolMax: number;
+  spoolMaxMB: number;
   msgboxURL?: string;
 }
 
 /** Default values for all config fields. */
 const DEFAULTS: CoreConfig = {
-  listenAddr: ':8100',
-  brainURL: 'http://localhost:8200',
+  listenAddr: `:${CORE_DEFAULT_PORT}`,
+  brainURL: DEFAULT_BRAIN_URL,
   vaultPath: './data',
   serviceKeyDir: './service_keys',
   securityMode: 'security',
   sessionTTL: 86400,
   rateLimit: 50,
-  spoolMax: 500,
+  spoolMaxMB: 500,
 };
 
 /**
@@ -63,7 +65,7 @@ export function loadConfig(env?: Record<string, string | undefined>): CoreConfig
     securityMode: (securityMode as 'security' | 'convenience') ?? DEFAULTS.securityMode,
     sessionTTL: parseIntOrDefault(e.DINA_SESSION_TTL, DEFAULTS.sessionTTL),
     rateLimit: parseIntOrDefault(e.DINA_RATE_LIMIT, DEFAULTS.rateLimit),
-    spoolMax: parseIntOrDefault(e.DINA_SPOOL_MAX, DEFAULTS.spoolMax),
+    spoolMaxMB: parseIntOrDefault(e.DINA_SPOOL_MAX, DEFAULTS.spoolMaxMB),
     msgboxURL: e.DINA_MSGBOX_URL,
   };
 }
@@ -104,8 +106,8 @@ export function validateConfig(config: CoreConfig): string[] {
     errors.push(`rateLimit must be non-negative, got ${config.rateLimit}`);
   }
 
-  if (config.spoolMax <= 0) {
-    errors.push(`spoolMax must be positive, got ${config.spoolMax}`);
+  if (config.spoolMaxMB <= 0) {
+    errors.push(`spoolMaxMB must be positive, got ${config.spoolMaxMB}`);
   }
 
   if (config.msgboxURL && !isValidURL(config.msgboxURL)) {

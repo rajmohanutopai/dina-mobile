@@ -33,8 +33,10 @@ export interface HeartbeatOptions {
   onError?: (itemId: string, error: Error) => void;
 }
 
-const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
-const DEFAULT_EXTENSION_SECONDS = 600;       // 10 minutes
+import { STAGING_LEASE_DURATION_S, MS_MINUTE } from '../../../core/src/constants';
+
+const DEFAULT_INTERVAL_MS = 5 * MS_MINUTE;                  // 5 minutes
+const DEFAULT_EXTENSION_SECONDS = STAGING_LEASE_DURATION_S * 2 / 3;  // 10 minutes (2/3 of lease renewal)
 
 export class LeaseHeartbeat {
   private readonly client: LeaseExtender;

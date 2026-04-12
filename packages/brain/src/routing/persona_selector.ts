@@ -15,8 +15,9 @@ import { classifyDomain, type ClassificationInput, type ClassificationResult } f
 import { personaExists, listPersonas } from '../../../core/src/persona/service';
 import { resolveAlias } from '../persona/registry';
 
+import { PERSONA_SELECTOR_THRESHOLD } from '../constants';
 /** Confidence threshold — below this, LLM is consulted. */
-const LLM_THRESHOLD = 0.6;
+const LLM_THRESHOLD = PERSONA_SELECTOR_THRESHOLD;
 
 /** Injectable LLM persona selection provider. */
 export type PersonaSelectorProvider = (

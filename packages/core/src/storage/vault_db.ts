@@ -10,7 +10,7 @@
  * The interface enforces:
  *   - Open with DEK (wrong DEK must throw)
  *   - WAL journal mode + synchronous=NORMAL pragmas
- *   - SQL execution (for schema migration)
+ *   - SQL execution (for schema application)
  *   - Prepared statement support (for queries)
  *   - Close with WAL checkpoint
  *
@@ -151,7 +151,7 @@ export class InMemoryVaultDB implements VaultDB {
       if (tableMatch) {
         const table = this.tables.get(tableMatch[1]);
         if (table) {
-          table.push({ _raw: trimmed } as any);
+          table.push({ _raw: trimmed });
         }
       }
       return;

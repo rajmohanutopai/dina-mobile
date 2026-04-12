@@ -16,6 +16,7 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { VaultItem, SearchQuery } from '@dina/test-harness';
 import { searchIndex, hasIndex } from '../embedding/persona_index';
+import { VAULT_QUERY_DEFAULT_LIMIT, VAULT_QUERY_MAX_LIMIT, HYBRID_FTS_WEIGHT, HYBRID_SEMANTIC_WEIGHT } from '../constants';
 
 const MAX_BATCH_SIZE = 100;
 
@@ -251,8 +252,8 @@ function queryHybrid(persona: string, query: SearchQuery): VaultItem[] {
   }
 
   // Combine with weights: 0.4 × FTS + 0.6 × cosine
-  const FTS_WEIGHT = 0.4;
-  const SEMANTIC_WEIGHT = 0.6;
+  const FTS_WEIGHT = HYBRID_FTS_WEIGHT;
+  const SEMANTIC_WEIGHT = HYBRID_SEMANTIC_WEIGHT;
   const combined = new Map<string, number>();
 
   // All items that matched on either axis
@@ -274,9 +275,9 @@ function queryHybrid(persona: string, query: SearchQuery): VaultItem[] {
     .filter((item): item is VaultItem => item !== undefined);
 }
 
-/** Clamp limit to [1, 100]. */
+/** Clamp limit to [1, VAULT_QUERY_MAX_LIMIT]. */
 function clampLimit(limit?: number): number {
-  return Math.max(1, Math.min(limit || 20, 100));
+  return Math.max(1, Math.min(limit || VAULT_QUERY_DEFAULT_LIMIT, VAULT_QUERY_MAX_LIMIT));
 }
 
 /**

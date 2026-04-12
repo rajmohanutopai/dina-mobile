@@ -123,20 +123,16 @@ export function getTieredContent(persona: string, itemId: string): {
 /**
  * Get the type distribution for a persona (for filter chips).
  */
-export function getTypeDistribution(persona: string): Array<{ type: string; count: number }> {
-  if (!isPersonaOpen(persona)) return [];
-
-  // Search with a broad query to get all items
-  const all = queryVault(persona, { mode: 'fts5', text: '*', limit: 1000 });
-
-  const counts = new Map<string, number>();
-  for (const item of all) {
-    counts.set(item.type, (counts.get(item.type) ?? 0) + 1);
-  }
-
-  return [...counts.entries()]
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count);
+/**
+ * Get the type distribution for a persona (for filter chips).
+ * Note: In production with SQLCipher, this would use SELECT type, COUNT(*) GROUP BY type.
+ * The in-memory implementation cannot enumerate all items via search,
+ * so this returns an empty array until the native backend is wired.
+ */
+export function getTypeDistribution(_persona: string): Array<{ type: string; count: number }> {
+  // Cannot enumerate all items via FTS search (wildcard not supported).
+  // Will be implemented when NativeVaultDB provides SQL GROUP BY.
+  return [];
 }
 
 /**

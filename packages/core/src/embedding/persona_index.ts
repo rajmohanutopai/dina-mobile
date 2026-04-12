@@ -11,8 +11,9 @@
  */
 
 import { HNSWIndex, type SearchResult } from './hnsw';
+import { DEFAULT_EMBEDDING_DIMENSIONS } from '../constants';
 
-const DEFAULT_DIMENSIONS = 768;
+const DEFAULT_DIMENSIONS = DEFAULT_EMBEDDING_DIMENSIONS;
 
 /** Per-persona indexes. */
 const indexes = new Map<string, HNSWIndex>();

@@ -14,6 +14,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { getPublicKey } from './ed25519';
+import { HARDENED_OFFSET as HARDENED } from '../constants';
 
 export interface DerivedKey {
   privateKey: Uint8Array; // 32 bytes
@@ -21,7 +22,7 @@ export interface DerivedKey {
   chainCode: Uint8Array;  // 32 bytes
 }
 
-const HARDENED_OFFSET = 0x80000000;
+const HARDENED_OFFSET = HARDENED;
 const SECP256K1_ORDER = secp256k1.Point.Fn.ORDER;
 
 /**

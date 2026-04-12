@@ -14,7 +14,8 @@
 
 export type AppState = 'active' | 'background' | 'background_expired' | 'killed';
 
-const DEFAULT_BACKGROUND_TIMEOUT_S = 300; // 5 minutes
+import { DEFAULT_BACKGROUND_TIMEOUT_S as BG_TIMEOUT_S } from '../constants';
+const DEFAULT_BACKGROUND_TIMEOUT_S = BG_TIMEOUT_S;
 
 /** Module-level lifecycle state. */
 let appState: AppState = 'active';

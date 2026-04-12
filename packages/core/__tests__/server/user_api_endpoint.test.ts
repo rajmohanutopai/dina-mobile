@@ -137,13 +137,13 @@ describe('User-Facing API Endpoints', () => {
       expect(res.status).toBe(404);
     });
 
-    it('completes with default handler when none registered', async () => {
+    it('fails when no handler registered (fail-closed)', async () => {
       const createRes = await signedPost(app, '/api/v1/ask', { query: 'test' });
       await waitForJob(createRes.body.id);
 
       const res = await signedGet(app, `/api/v1/ask/${createRes.body.id}/status`);
-      expect(res.body.status).toBe('completed');
-      expect(res.body.result).toContain('test');
+      expect(res.body.status).toBe('failed');
+      expect(res.body.error).toContain('not configured');
     });
   });
 

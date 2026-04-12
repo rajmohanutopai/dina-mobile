@@ -78,9 +78,11 @@ export interface GeminiEmbedResult {
   embedding: { values: number[] };
 }
 
-const DEFAULT_CHAT_MODEL = 'gemini-2.5-flash';
-const DEFAULT_EMBED_MODEL = 'embedding-001';
-const DEFAULT_MAX_TOKENS = 4096;
+import { DEFAULT_GEMINI_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+
+const DEFAULT_CHAT_MODEL = DEFAULT_GEMINI_MODEL;
+const DEFAULT_EMBED_MODEL = 'embedding-001'; // Gemini-specific, not shared
+const DEFAULT_MAX_TOKENS = MAX_TOKENS;
 
 export class GeminiAdapter implements LLMProvider {
   readonly name = 'gemini';

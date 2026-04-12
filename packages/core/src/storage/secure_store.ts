@@ -87,6 +87,8 @@ export interface SecureStore {
  * Simulates keychain behavior without native modules.
  * Biometric "available" can be toggled for testing different device configs.
  */
+import { BIOMETRIC_MAX_FAILURES } from '../constants';
+
 export class InMemorySecureStore implements SecureStore {
   private passphrase: string | null = null;
   private wrappedSeed: Uint8Array | null = null;
@@ -102,7 +104,7 @@ export class InMemorySecureStore implements SecureStore {
   /** Simulate a failed biometric attempt. */
   simulateBiometricFailure(): void {
     this.failedBiometricAttempts++;
-    if (this.failedBiometricAttempts >= 5) {
+    if (this.failedBiometricAttempts >= BIOMETRIC_MAX_FAILURES) {
       // Auto-clear on too many failures (security measure)
       this.biometricEnabled = false;
       this.failedBiometricAttempts = 0;

@@ -13,6 +13,8 @@ describe('Brain HTTP Server', () => {
 
   beforeEach(() => {
     resetBrainAuth();
+    // Configure pass-through auth for endpoint logic tests
+    configureBrainAuth((_req: Request, _res: Response, next: NextFunction) => next());
     app = createBrainApp();
   });
 
@@ -60,28 +62,30 @@ describe('Brain HTTP Server', () => {
         .post('/v1/reason')
         .set('Content-Type', 'application/octet-stream')
         .send(Buffer.from(JSON.stringify({ query: 'test' })));
-      expect(res.status).toBe(200);
+      // Auth passes, endpoint responds (501 because reasoning not wired)
+      expect(res.status).toBe(501);
+    });
+
+    it('rejects when no auth configured (fail-closed)', async () => {
+      resetBrainAuth();
+      app = createBrainApp();
+
+      const res = await request(app)
+        .post('/v1/reason')
+        .set('Content-Type', 'application/octet-stream')
+        .send(Buffer.from(JSON.stringify({ query: 'test' })));
+      expect(res.status).toBe(401);
     });
   });
 
   describe('POST /v1/reason — chat reasoning', () => {
-    it('returns placeholder response with query echoed', async () => {
+    it('returns 501 when reasoning pipeline not wired', async () => {
       const res = await request(app)
         .post('/v1/reason')
         .set('Content-Type', 'application/octet-stream')
         .send(Buffer.from(JSON.stringify({ query: 'What is 2+2?' })));
-      expect(res.status).toBe(200);
-      expect(res.body.answer).toContain('What is 2+2?');
-      expect(res.body.sources).toEqual([]);
-      expect(res.body.persona).toBe('general');
-    });
-
-    it('accepts custom persona', async () => {
-      const res = await request(app)
-        .post('/v1/reason')
-        .set('Content-Type', 'application/octet-stream')
-        .send(Buffer.from(JSON.stringify({ query: 'test', persona: 'work' })));
-      expect(res.body.persona).toBe('work');
+      expect(res.status).toBe(501);
+      expect(res.body.error).toContain('not yet wired');
     });
 
     it('rejects missing query', async () => {
@@ -94,14 +98,14 @@ describe('Brain HTTP Server', () => {
   });
 
   describe('POST /v1/process — event processing', () => {
-    it('processes an event', async () => {
+    it('processes an event via real event processor', async () => {
       const res = await request(app)
         .post('/v1/process')
         .set('Content-Type', 'application/octet-stream')
-        .send(Buffer.from(JSON.stringify({ event: 'reminder_fired', data: {} })));
+        .send(Buffer.from(JSON.stringify({ event: 'reminder_fired', message: 'Call dentist', persona: 'general' })));
       expect(res.status).toBe(200);
-      expect(res.body.processed).toBe(true);
       expect(res.body.event).toBe('reminder_fired');
+      expect(res.body.handled).toBe(true);
     });
 
     it('rejects missing event', async () => {

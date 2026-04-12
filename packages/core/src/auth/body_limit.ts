@@ -1,7 +1,7 @@
 /**
  * Body limit middleware — reject oversized request bodies.
  *
- * Default limit: 1 MiB (1,048,576 bytes).
+ * Default limit: 2 MB (matches Express raw parser limit).
  * Returns a structured rejection for bodies exceeding the limit.
  *
  * Applied early in the middleware pipeline (before auth) to prevent
@@ -10,7 +10,9 @@
  * Source: ARCHITECTURE.md Task 2.7
  */
 
-const DEFAULT_LIMIT_BYTES = 1 * 1024 * 1024; // 1 MiB
+import { MAX_BODY_SIZE_BYTES } from '../constants';
+
+const DEFAULT_LIMIT_BYTES = MAX_BODY_SIZE_BYTES;
 
 export interface BodyLimitResult {
   allowed: boolean;

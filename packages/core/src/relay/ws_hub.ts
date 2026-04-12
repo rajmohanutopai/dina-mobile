@@ -44,8 +44,10 @@ export type AuthChecker = (credentials: Record<string, string>) => string | null
 /** Injectable message sender: sends serialized event to a client. */
 export type MessageSender = (clientId: string, message: string) => boolean;
 
-const DEFAULT_BUFFER_SIZE = 50;
-const DEFAULT_BUFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
+import { WS_HUB_BUFFER_SIZE, WS_HUB_BUFFER_TTL_MS } from '../constants';
+
+const DEFAULT_BUFFER_SIZE = WS_HUB_BUFFER_SIZE;
+const DEFAULT_BUFFER_TTL_MS = WS_HUB_BUFFER_TTL_MS;
 
 export interface HubConfig {
   bufferSize?: number;

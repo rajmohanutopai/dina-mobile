@@ -13,9 +13,10 @@
  */
 
 import { base58 } from '@scure/base';
+import { ED25519_PUBLIC_KEY_BYTES, ED25519_MULTICODEC as ED_MULTICODEC } from '../constants';
 
-/** Multicodec varint prefix for Ed25519 public key: 0xed 0x01. */
-const ED25519_MULTICODEC = new Uint8Array([0xed, 0x01]);
+/** Multicodec varint prefix for Ed25519 public key (from shared constants). */
+const ED25519_MULTICODEC = ED_MULTICODEC;
 
 /**
  * Derive a did:key identifier from an Ed25519 public key.
@@ -24,7 +25,7 @@ const ED25519_MULTICODEC = new Uint8Array([0xed, 0x01]);
  * @returns did:key:z6Mk... string
  */
 export function deriveDIDKey(publicKey: Uint8Array): string {
-  if (!publicKey || publicKey.length !== 32) {
+  if (!publicKey || publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('did: public key must be exactly 32 bytes');
   }
   const multibase = publicKeyToMultibase(publicKey);
@@ -55,7 +56,7 @@ export function extractPublicKey(did: string): Uint8Array {
  * @returns z-prefixed multibase string (e.g., "z6Mk...")
  */
 export function publicKeyToMultibase(publicKey: Uint8Array): string {
-  if (!publicKey || publicKey.length !== 32) {
+  if (!publicKey || publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error('did: public key must be exactly 32 bytes');
   }
   // Prepend multicodec prefix
@@ -88,7 +89,7 @@ export function multibaseToPublicKey(multibase: string): Uint8Array {
   }
 
   const publicKey = decoded.slice(ED25519_MULTICODEC.length);
-  if (publicKey.length !== 32) {
+  if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
     throw new Error(`did: decoded public key is ${publicKey.length} bytes, expected 32`);
   }
 

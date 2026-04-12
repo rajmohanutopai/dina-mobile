@@ -19,6 +19,8 @@
  * Source: ARCHITECTURE.md Task 6.2
  */
 
+import { MSGBOX_WS_SUFFIX, MSGBOX_FORWARD_SUFFIX } from '../constants';
+
 /**
  * Convert a MsgBox WebSocket URL to its HTTP forward URL.
  *
@@ -44,7 +46,7 @@ export function msgboxWSToForwardURL(wsURL: string): string {
   url = url.replace(/\/ws\/?$/, '');
 
   // Step 3: Append /forward
-  url = url.replace(/\/$/, '') + '/forward';
+  url = url.replace(/\/$/, '') + MSGBOX_FORWARD_SUFFIX;
 
   return url;
 }
@@ -75,7 +77,7 @@ export function forwardURLToMsgboxWS(forwardURL: string): string {
   url = url.replace(/\/forward\/?$/, '');
 
   // Step 3: Append /ws
-  url = url.replace(/\/$/, '') + '/ws';
+  url = url.replace(/\/$/, '') + MSGBOX_WS_SUFFIX;
 
   return url;
 }

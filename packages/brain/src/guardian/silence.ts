@@ -39,7 +39,9 @@ const SOLICITED_TYPE_SET = new Set(['reminder', 'search_result']);
 
 const ENGAGEMENT_TYPE_SET = new Set(['notification', 'promo', 'social', 'rss', 'podcast']);
 
-const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+import { GUARDIAN_STALE_THRESHOLD_MS, ESCALATION_THRESHOLD as ESC_THRESHOLD } from '../constants';
+
+const STALE_THRESHOLD_MS = GUARDIAN_STALE_THRESHOLD_MS;
 
 // ---------------------------------------------------------------
 // DND state
@@ -72,7 +74,7 @@ export function resetDNDState(): void {
 // ---------------------------------------------------------------
 
 /** Escalation threshold: after N engagement events from the same source, escalate to fiduciary. */
-const ESCALATION_THRESHOLD = 3;
+const ESCALATION_THRESHOLD = ESC_THRESHOLD;
 
 /** Source → recent engagement event count. */
 const escalationCounts = new Map<string, number>();

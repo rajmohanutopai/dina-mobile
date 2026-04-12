@@ -11,6 +11,7 @@
 import { signRequest } from '../../../core/src/auth/canonical';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { REQUEST_TIMEOUT_MS, STAGING_MAX_RETRIES, VAULT_QUERY_DEFAULT_LIMIT } from '../../../core/src/constants';
 import { isNonRetryableStatus, backoff, parseResponseBody } from '../../../core/src/transport/http_retry';
 
 export interface BrainCoreClientConfig {
@@ -37,8 +38,8 @@ export class BrainCoreClient {
     this.coreURL = config.coreURL.replace(/\/$/, '');
     this.privateKey = config.privateKey;
     this.did = config.did;
-    this.timeoutMs = config.timeoutMs ?? 30_000;
-    this.maxRetries = config.maxRetries ?? 3;
+    this.timeoutMs = config.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.maxRetries = config.maxRetries ?? STAGING_MAX_RETRIES;
     this.fetchFn = config.fetch ?? globalThis.fetch;
   }
 
@@ -56,7 +57,7 @@ export class BrainCoreClient {
 
   /** Search vault via Core. */
   async searchVault(persona: string, query: string, limit?: number): Promise<unknown[]> {
-    const body = { text: query, mode: 'fts5', limit: limit ?? 20 };
+    const body = { text: query, mode: 'fts5', limit: limit ?? VAULT_QUERY_DEFAULT_LIMIT };
     const result = await this.signedRequest('POST', `/v1/vault/query?persona=${encodeURIComponent(persona)}`, body);
     return (result.body as { items: unknown[] }).items ?? [];
   }
@@ -99,7 +100,7 @@ export class BrainCoreClient {
 
   /** Extend the lease on a staging item. */
   async extendStagingLease(itemId: string, seconds: number): Promise<void> {
-    await this.signedRequest('POST', '/v1/staging/extend', { id: itemId, seconds });
+    await this.signedRequest('POST', '/v1/staging/extend-lease', { id: itemId, seconds });
   }
 
   /** Send a D2D message via Core. */

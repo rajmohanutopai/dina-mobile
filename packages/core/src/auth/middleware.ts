@@ -156,7 +156,19 @@ export function authenticateRequest(req: AuthRequest): AuthResult {
   // 7. Authorize (path × callerType)
   // Map generic 'service' to specific authz role using the registered service name
   const authzRole = mapToAuthzRole(callerIdentity.callerType, callerIdentity.name);
-  if (authzRole && !isAuthorized(authzRole, req.method, req.path)) {
+
+  // Fail-closed: if we can't determine a role, reject the request
+  if (!authzRole) {
+    return {
+      authenticated: false,
+      did,
+      callerType: callerIdentity.callerType,
+      rejectedAt: 'authorization',
+      reason: `Cannot determine authorization role for ${callerIdentity.callerType}/${callerIdentity.name ?? 'unknown'}`,
+    };
+  }
+
+  if (!isAuthorized(authzRole, req.method, req.path)) {
     return {
       authenticated: false,
       did,
@@ -176,23 +188,22 @@ export function authenticateRequest(req: AuthRequest): AuthResult {
 /**
  * Map generic caller type + service name to specific authz role.
  * 'service' with name 'brain' → 'brain', 'admin' → 'admin', etc.
- * 'device' → 'device', 'agent' → 'agent', 'unknown' → null (skip authz).
+ * 'device' → 'device', 'agent' → 'agent'.
+ * Returns null for unrecognized callers → fail-closed (rejected by step 7).
  */
 function mapToAuthzRole(callerType: string, name?: string): AuthzCallerType | null {
   if (callerType === 'device') return 'device';
   if (callerType === 'agent') return 'agent';
-  if (callerType === 'unknown') return null;
 
-  // Service: use the registered name as the authz role
+  // Service: only recognized names get a role
   if (callerType === 'service' && name) {
     const role = name.toLowerCase();
     if (role === 'brain' || role === 'admin' || role === 'connector') {
       return role as AuthzCallerType;
     }
-    // Default service role: brain (most permissive service role)
-    return 'brain';
   }
 
+  // Unknown caller type OR unknown service name → null → rejected
   return null;
 }
 

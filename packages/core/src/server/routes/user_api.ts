@@ -178,13 +178,12 @@ async function processAsk(jobId: string, query: string, persona: string): Promis
       const result = await askHandler(query, persona);
       job.result = result.answer;
       job.sources = result.sources;
+      job.status = 'completed';
+      job.completed_at = Date.now();
     } else {
-      // Default: no handler registered, return a placeholder
-      job.result = `[No reasoning pipeline configured] Query: ${query}`;
-      job.sources = [];
+      job.status = 'failed';
+      job.error = 'Reasoning pipeline not configured';
     }
-    job.status = 'completed';
-    job.completed_at = Date.now();
   } catch (err) {
     job.status = 'failed';
     job.error = err instanceof Error ? err.message : String(err);
@@ -199,12 +198,12 @@ async function processRemember(jobId: string, text: string, persona: string): Pr
     if (rememberHandler) {
       const result = await rememberHandler(text, persona);
       job.result = result.duplicate ? 'Already stored' : 'Stored successfully';
+      job.status = 'completed';
+      job.completed_at = Date.now();
     } else {
-      // Default: no handler registered
-      job.result = 'Stored successfully';
+      job.status = 'failed';
+      job.error = 'Storage pipeline not configured';
     }
-    job.status = 'completed';
-    job.completed_at = Date.now();
   } catch (err) {
     job.status = 'failed';
     job.error = err instanceof Error ? err.message : String(err);

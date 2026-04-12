@@ -21,7 +21,7 @@ import {
   addSyncItem,
   corruptCache,
 } from '../../src/sync/client';
-import { completePairing } from '../../src/pairing/ceremony';
+import { completePairing, setNodeDID } from '../../src/pairing/ceremony';
 
 describe('Device Sync Integration', () => {
   beforeEach(() => resetSyncState());
@@ -152,7 +152,11 @@ describe('Device Sync Integration', () => {
     });
 
     it('QR code pairing: invalid code rejected', () => {
-      expect(() => completePairing('123456', 'Phone', 'z6MkKey'))
+      setNodeDID('did:key:z6MkTestNode');
+      const { publicKeyToMultibase } = require('../../src/identity/did');
+      const { getPublicKey } = require('../../src/crypto/ed25519');
+      const mb = publicKeyToMultibase(getPublicKey(new Uint8Array(32).fill(0x99)));
+      expect(() => completePairing('123456', 'Phone', mb))
         .toThrow('invalid');
     });
 

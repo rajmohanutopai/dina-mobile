@@ -8,7 +8,8 @@
  * Source: ARCHITECTURE.md Task 2.8
  */
 
-const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
+import { REQUEST_TIMEOUT_MS } from '../constants';
+const DEFAULT_TIMEOUT_MS = REQUEST_TIMEOUT_MS;
 
 export interface TimeoutResult<T> {
   completed: boolean;

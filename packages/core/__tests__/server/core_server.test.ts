@@ -85,8 +85,8 @@ describe('Core HTTP Server', () => {
   });
 
   describe('body limit', () => {
-    it('rejects body > 1MB with 413', async () => {
-      const largeBody = Buffer.alloc(1.5 * 1024 * 1024, 'x');
+    it('rejects body > 2MB with 413', async () => {
+      const largeBody = Buffer.alloc(2_100_000, 'x'); // > 2MB limit
       const headers = signRequest('POST', '/v1/vault/store', '', new Uint8Array(largeBody), TEST_ED25519_SEED, did);
 
       const res = await request(app)

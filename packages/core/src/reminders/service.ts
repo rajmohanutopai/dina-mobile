@@ -13,6 +13,7 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { MS_DAY } from '../constants';
 
 export type RecurringFrequency = '' | 'daily' | 'weekly' | 'monthly';
 
@@ -172,7 +173,6 @@ export function deleteReminder(id: string): boolean {
 
 /** Compute the next occurrence for a recurring reminder. */
 function computeNextOccurrence(dueAt: number, frequency: RecurringFrequency): number {
-  const MS_DAY = 86_400_000;
   switch (frequency) {
     case 'daily': return dueAt + MS_DAY;
     case 'weekly': return dueAt + 7 * MS_DAY;

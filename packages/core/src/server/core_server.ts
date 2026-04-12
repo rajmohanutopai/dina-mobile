@@ -30,7 +30,8 @@ import { createExportImportRouter } from './routes/export_import';
 import { createUserApiRouter } from './routes/user_api';
 import { createD2DMsgRouter } from './routes/d2d_msg';
 
-export const DEFAULT_PORT = 8100;
+import { CORE_DEFAULT_PORT } from '../constants';
+export const DEFAULT_PORT = CORE_DEFAULT_PORT;
 export const HEALTHZ_PATH = '/healthz';
 
 /**
@@ -98,8 +99,9 @@ export function createCoreApp() {
     }
 
     // Attach auth info to request for downstream handlers
-    (req as any).callerDID = result.did;
-    (req as any).callerType = result.callerType;
+    // Using res.locals (Express-standard) instead of req mutation
+    res.locals.callerDID = result.did;
+    res.locals.callerType = result.callerType;
     next();
   });
 

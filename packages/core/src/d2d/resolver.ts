@@ -20,8 +20,9 @@ import { validateDIDDocument, getMessagingService } from '../identity/did_docume
 import { buildDIDDocument } from '../identity/did_document';
 import { extractPublicKey, publicKeyToMultibase } from '../identity/did';
 
-const DEFAULT_PLC_DIRECTORY = 'https://plc.directory';
-const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes
+import { DEFAULT_PLC_DIRECTORY, DID_CACHE_TTL_MS } from '../constants';
+
+const DEFAULT_TTL_MS = DID_CACHE_TTL_MS;
 
 export interface ResolvedDID {
   did: string;

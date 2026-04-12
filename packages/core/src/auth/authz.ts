@@ -38,7 +38,7 @@ const AUTHZ_RULES: Array<{ prefix: string; allowed: Set<CallerType> }> = [
   { prefix: '/v1/staging/claim',     allowed: new Set(['brain']) },
   { prefix: '/v1/staging/resolve',   allowed: new Set(['brain']) },
   { prefix: '/v1/staging/fail',      allowed: new Set(['brain']) },
-  { prefix: '/v1/staging/extend',    allowed: new Set(['brain']) },
+  { prefix: '/v1/staging/extend-lease', allowed: new Set(['brain']) },
 
   // Persona management — Admin only
   { prefix: '/v1/persona/unlock',    allowed: new Set(['admin']) },

@@ -52,8 +52,9 @@ export interface VerificationChallenge {
   expected: string[];
 }
 
+import { ONBOARDING_VERIFY_WORD_COUNT } from '../../../core/src/constants';
 /** Number of words to verify during onboarding. */
-const VERIFY_WORD_COUNT = 3;
+const VERIFY_WORD_COUNT = ONBOARDING_VERIFY_WORD_COUNT;
 
 // ---------------------------------------------------------------
 // Create Identity (4.2)

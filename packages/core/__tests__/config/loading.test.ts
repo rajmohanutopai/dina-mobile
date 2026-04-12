@@ -20,7 +20,7 @@ describe('Configuration Loading', () => {
       expect(config.securityMode).toBe('security');
       expect(config.sessionTTL).toBe(86400);
       expect(config.rateLimit).toBe(50);
-      expect(config.spoolMax).toBe(500);
+      expect(config.spoolMaxMB).toBe(500);
       expect(config.msgboxURL).toBeUndefined();
     });
 
@@ -68,7 +68,7 @@ describe('Configuration Loading', () => {
 
     it('reads spool max from env', () => {
       const config = loadConfig({ DINA_SPOOL_MAX: '1000' });
-      expect(config.spoolMax).toBe(1000);
+      expect(config.spoolMaxMB).toBe(1000);
     });
 
     it('reads MsgBox URL from env', () => {
@@ -96,7 +96,7 @@ describe('Configuration Loading', () => {
       securityMode: 'security',
       sessionTTL: 86400,
       rateLimit: 50,
-      spoolMax: 500,
+      spoolMaxMB: 500,
     };
 
     it('accepts valid config', () => {
@@ -127,9 +127,9 @@ describe('Configuration Loading', () => {
       expect(errors.some(e => e.includes('sessionTTL'))).toBe(true);
     });
 
-    it('rejects zero spoolMax', () => {
-      const errors = validateConfig({ ...validConfig, spoolMax: 0 });
-      expect(errors.some(e => e.includes('spoolMax'))).toBe(true);
+    it('rejects zero spoolMaxMB', () => {
+      const errors = validateConfig({ ...validConfig, spoolMaxMB: 0 });
+      expect(errors.some(e => e.includes('spoolMaxMB'))).toBe(true);
     });
 
     it('accepts valid msgboxURL', () => {

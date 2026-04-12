@@ -140,8 +140,9 @@ describe('Auth Middleware Orchestration', () => {
 
       const req = signedRequest('POST', '/v1/vault/store', '{}');
       const result = authenticateRequest(req);
-      // Either unauthorized or passes (depends on authz matrix for device)
-      expect(result.did).toBe(did);
+      // Device is NOT authorized for /v1/vault/store (brain-only endpoint)
+      expect(result.authenticated).toBe(false);
+      expect(result.rejectedAt).toBe('authorization');
     });
   });
 

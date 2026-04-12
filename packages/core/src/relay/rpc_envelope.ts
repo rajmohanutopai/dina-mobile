@@ -11,6 +11,7 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { sealEncrypt, sealDecrypt } from '../crypto/nacl';
 import { hasSigningHeaders } from '../cli/client';
+import { RPC_REQUEST_TYPE, RPC_RESPONSE_TYPE } from '../constants';
 
 export interface CoreRPCRequest {
   type: 'core_rpc_request';
@@ -43,7 +44,7 @@ export function buildRPCRequest(
   senderDID: string,
 ): CoreRPCRequest {
   return {
-    type: 'core_rpc_request',
+    type: RPC_REQUEST_TYPE as 'core_rpc_request',
     request_id: `rpc-${bytesToHex(randomBytes(8))}`,
     from: senderDID,
     method,
@@ -73,8 +74,8 @@ export function unsealRPCRequest(
   const json = new TextDecoder().decode(plaintext);
   const parsed = JSON.parse(json);
 
-  if (parsed.type !== 'core_rpc_request') {
-    throw new Error('rpc_envelope: not a core_rpc_request');
+  if (parsed.type !== RPC_REQUEST_TYPE) {
+    throw new Error(`rpc_envelope: expected ${RPC_REQUEST_TYPE}, got ${parsed.type}`);
   }
 
   return parsed as CoreRPCRequest;

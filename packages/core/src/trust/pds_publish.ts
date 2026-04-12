@@ -11,6 +11,7 @@
  */
 
 import { canonicalize, signCanonical, verifyCanonical } from '../identity/signing';
+import { TRUST_RATING_MIN, TRUST_RATING_MAX } from '../constants';
 
 export interface AttestationRecord {
   subject_did: string;
@@ -54,7 +55,7 @@ export function resetPDSFetchFn(): void {
  * Validate rating is in range 0-100 (inclusive), integer.
  */
 export function isValidRating(rating: number): boolean {
-  return Number.isInteger(rating) && rating >= 0 && rating <= 100;
+  return Number.isInteger(rating) && rating >= TRUST_RATING_MIN && rating <= TRUST_RATING_MAX;
 }
 
 /**

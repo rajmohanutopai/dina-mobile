@@ -34,8 +34,10 @@ export interface Briefing {
   totalItems: number;
 }
 
+import { DEFAULT_BRIEFING_HOUR } from '../constants';
+
 /** Default briefing hour (8 AM). */
-let briefingHour = 8;
+let briefingHour = DEFAULT_BRIEFING_HOUR;
 
 /** Injectable engagement item provider. */
 let engagementProvider: (() => BriefingItem[]) | null = null;

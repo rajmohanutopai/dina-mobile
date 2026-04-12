@@ -12,6 +12,7 @@
  */
 
 import { sha256 } from '@noble/hashes/sha2.js';
+import { RPC_RESPONSE_TYPE } from '../constants';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { sign, verify } from '../crypto/ed25519';
 import { sealEncrypt } from '../crypto/nacl';
@@ -46,7 +47,7 @@ export function buildSignedResponse(
   const sig = sign(corePrivateKey, new TextEncoder().encode(canonical));
 
   return {
-    type: 'core_rpc_response',
+    type: RPC_RESPONSE_TYPE as 'core_rpc_response',
     request_id: requestId,
     from: coreDID,
     status,

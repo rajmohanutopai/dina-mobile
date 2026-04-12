@@ -32,7 +32,8 @@ function secp256k1ToMultibase(pubKey: Uint8Array): string {
   return 'z' + base58.encode(payload);
 }
 
-const DEFAULT_PLC_URL = 'https://plc.directory';
+import { DEFAULT_PLC_DIRECTORY } from '../constants';
+const DEFAULT_PLC_URL = DEFAULT_PLC_DIRECTORY;
 
 export interface PLCCreateParams {
   /** 32-byte root signing seed (Ed25519). */

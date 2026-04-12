@@ -36,8 +36,9 @@ let biometricEnabled = false;
 /** In-memory wrapped seed reference (for passphrase change). */
 let currentWrappedSeed: WrappedSeed | null = null;
 
-const MIN_PASSPHRASE_LENGTH = 8;
-const MAX_PASSPHRASE_LENGTH = 128;
+import { PASSPHRASE_MIN_LENGTH, PASSPHRASE_MAX_LENGTH } from '../../../core/src/constants';
+const MIN_PASSPHRASE_LENGTH = PASSPHRASE_MIN_LENGTH;
+const MAX_PASSPHRASE_LENGTH = PASSPHRASE_MAX_LENGTH;
 
 /**
  * Initialize security state after unlock.

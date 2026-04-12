@@ -7,7 +7,6 @@
  *   POST /v1/process — event processing (approval, reminder, post-publish)
  *   POST /v1/classify — domain classification
  *   POST /v1/enrich — item enrichment (L0/L1)
- *   POST /v1/pii/scrub — Tier 2 PII scrub
  *
  * The Brain server is called by the app UI (via Core proxy or direct
  * localhost) and by Core for event processing. All non-health routes
@@ -19,6 +18,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { classifyDomain, type ClassificationInput } from '../routing/domain';
 import { generateL0, type L0Input } from '../enrichment/l0_deterministic';
+import { processEvent } from '../pipeline/event_processor';
 
 export const DEFAULT_BRAIN_PORT = 8200;
 export const HEALTHZ_PATH = '/healthz';
@@ -62,8 +62,9 @@ export function createBrainApp() {
       return authMiddleware(req, res, next);
     }
 
-    // No auth configured — allow (development mode)
-    next();
+    // No auth configured — reject (fail-closed)
+    res.status(401).json({ error: 'Auth middleware not configured' });
+    return;
   });
 
   // POST /v1/reason — chat reasoning (stub, wired in Phase 3.25)
@@ -75,12 +76,11 @@ export function createBrainApp() {
 
       if (!query) { res.status(400).json({ error: 'query is required' }); return; }
 
-      // Stub: returns a placeholder until chat reasoning pipeline is wired
-      res.json({
-        answer: `[Brain reasoning not yet wired] Query: ${query}`,
-        sources: [],
+      // Not wired — return 501 so callers know the pipeline isn't ready
+      res.status(501).json({
+        error: 'Reasoning pipeline not yet wired',
+        query,
         persona,
-        latency_ms: 0,
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -95,7 +95,9 @@ export function createBrainApp() {
 
       if (!event) { res.status(400).json({ error: 'event is required' }); return; }
 
-      res.json({ processed: true, event });
+      // Event processing wired to the real event processor
+      const result = processEvent({ event: event as import('../pipeline/event_processor').EventType, data: body });
+      res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

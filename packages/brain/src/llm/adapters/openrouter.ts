@@ -23,9 +23,11 @@ import type {
   ChatOptions, EmbedOptions, EmbedResponse, ToolCall,
 } from './provider';
 
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-const DEFAULT_MODEL = 'auto';
-const DEFAULT_MAX_TOKENS = 4096;
+import { OPENROUTER_BASE_URL as OR_BASE, DEFAULT_OPENROUTER_MODEL, OPENROUTER_APP_NAME, OPENROUTER_APP_URL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+
+const OPENROUTER_BASE_URL = OR_BASE;
+const DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL;
+const DEFAULT_MAX_TOKENS = MAX_TOKENS;
 
 export interface OpenRouterConfig {
   apiKey: string;
@@ -74,8 +76,8 @@ export class OpenRouterAdapter implements LLMProvider {
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? OPENROUTER_BASE_URL).replace(/\/$/, '');
     this.defaultModel = config.defaultModel ?? DEFAULT_MODEL;
-    this.appName = config.appName ?? 'Dina';
-    this.appURL = config.appURL ?? 'https://dinakernel.com';
+    this.appName = config.appName ?? OPENROUTER_APP_NAME;
+    this.appURL = config.appURL ?? OPENROUTER_APP_URL;
     this.fetchFn = config.fetch ?? globalThis.fetch;
   }
 

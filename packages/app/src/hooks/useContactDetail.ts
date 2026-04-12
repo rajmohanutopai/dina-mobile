@@ -32,8 +32,10 @@ export interface ContactDetailState {
   scenarioDeny: string[];
 }
 
-/** Standard data categories for sharing policy editor. */
-const CATEGORIES = ['general', 'health', 'financial', 'social', 'work'];
+import { DATA_CATEGORIES } from '../../../core/src/persona/names';
+
+/** Standard data categories for sharing policy editor (from canonical names). */
+const CATEGORIES = [...DATA_CATEGORIES];
 
 /** Scenario deny list state (per contact). */
 const scenarioDenyLists = new Map<string, string[]>();

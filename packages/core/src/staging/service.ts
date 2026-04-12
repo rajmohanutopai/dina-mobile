@@ -21,6 +21,7 @@ import {
   isLeaseExpired,
   isItemExpired,
 } from './state_machine';
+import { STAGING_LEASE_DURATION_S, STAGING_ITEM_TTL_S } from '../constants';
 
 export interface StagingItem {
   id: string;
@@ -36,8 +37,8 @@ export interface StagingItem {
   data: Record<string, unknown>;
 }
 
-const LEASE_DURATION_S = 15 * 60;  // 15 minutes
-const ITEM_TTL_S = 7 * 24 * 3600; // 7 days
+const LEASE_DURATION_S = STAGING_LEASE_DURATION_S;
+const ITEM_TTL_S = STAGING_ITEM_TTL_S;
 
 /** In-memory staging inbox. */
 const inbox = new Map<string, StagingItem>();

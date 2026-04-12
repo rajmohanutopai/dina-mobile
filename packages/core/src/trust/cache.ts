@@ -11,9 +11,10 @@
  */
 
 import { kvGet, kvSet, kvDelete } from '../kv/store';
+import { TRUST_CACHE_TTL_MS } from '../constants';
 
 const CACHE_NAMESPACE = 'trust_cache';
-const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
+const DEFAULT_TTL_MS = TRUST_CACHE_TTL_MS;
 
 export interface TrustScore {
   did: string;

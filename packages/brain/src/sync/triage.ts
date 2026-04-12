@@ -132,8 +132,9 @@ export function triagePass1(item: EmailItem): TriageResult {
 // Pass 2: LLM batch classify
 // ---------------------------------------------------------------
 
+import { TRIAGE_CONFIDENCE_THRESHOLD } from '../constants';
 /** Default confidence threshold for LLM skip decisions. */
-const LLM_CONFIDENCE_THRESHOLD = 0.7;
+const LLM_CONFIDENCE_THRESHOLD = TRIAGE_CONFIDENCE_THRESHOLD;
 
 /**
  * Pass 2: LLM-assisted triage for items that Pass 1 couldn't decide.

@@ -16,6 +16,10 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { registerDevice as persistDevice } from '../devices/registry';
+import { registerDevice as registerDeviceAuth } from '../auth/caller_type';
+import { multibaseToPublicKey } from '../identity/did';
+import { deriveDIDKey } from '../identity/did';
 
 export interface PairingCode {
   code: string;       // 6-digit numeric string
@@ -27,11 +31,10 @@ export interface PairingResult {
   nodeDID: string;
 }
 
-/** TTL for pairing codes: 5 minutes in seconds. */
-const CODE_TTL_SECONDS = 300;
+import { PAIRING_CODE_TTL_S, PAIRING_MAX_PENDING, PAIRING_CODE_MIN, PAIRING_CODE_RANGE } from '../constants';
 
-/** Maximum number of pending (active) pairing codes. */
-const MAX_PENDING_CODES = 100;
+const CODE_TTL_SECONDS = PAIRING_CODE_TTL_S;
+const MAX_PENDING_CODES = PAIRING_MAX_PENDING;
 
 /** In-memory store of pending codes. */
 interface PendingCode {
@@ -42,11 +45,12 @@ interface PendingCode {
 
 const pendingCodes = new Map<string, PendingCode>();
 
-/** Node DID placeholder — in production, derived from root signing key. */
-let nodeDID = 'did:key:z6MkNode';
+/** Node DID — MUST be set at startup via setNodeDID() before any pairing. */
+let nodeDID: string | null = null;
 
-/** Set the node DID (called at startup). */
+/** Set the node DID (called at startup after identity unlock). */
 export function setNodeDID(did: string): void {
+  if (!did || !did.startsWith('did:')) throw new Error('pairing: invalid node DID');
   nodeDID = did;
 }
 
@@ -57,6 +61,8 @@ export function setNodeDID(did: string): void {
  * @throws if max pending codes exceeded
  */
 export function generatePairingCode(): PairingCode {
+  if (!nodeDID) throw new Error('pairing: node DID not set — call setNodeDID() at startup');
+
   // Purge expired before counting
   purgeExpiredCodes();
 
@@ -65,10 +71,8 @@ export function generatePairingCode(): PairingCode {
   }
 
   // Generate cryptographically random 6-digit code (100000–999999)
-  const CODE_MIN = 100000;
-  const CODE_RANGE = 900000; // 999999 - 100000 + 1
   const randomValue = bytesToHex(randomBytes(4));
-  const numericValue = (parseInt(randomValue, 16) % CODE_RANGE) + CODE_MIN;
+  const numericValue = (parseInt(randomValue, 16) % PAIRING_CODE_RANGE) + PAIRING_CODE_MIN;
   const code = String(numericValue);
 
   const expiresAt = Math.floor(Date.now() / 1000) + CODE_TTL_SECONDS;
@@ -91,7 +95,9 @@ export function completePairing(
   code: string,
   deviceName: string,
   publicKeyMultibase: string,
+  role: import('../devices/registry').DeviceRole = 'rich',
 ): PairingResult {
+  if (!nodeDID) throw new Error('pairing: node DID not set — call setNodeDID() at startup');
   if (!isCodeValid(code)) {
     throw new Error('pairing: invalid, expired, or already-used code');
   }
@@ -100,10 +106,17 @@ export function completePairing(
   const pending = pendingCodes.get(code)!;
   pending.used = true;
 
-  // Generate a device ID
-  const deviceId = `dev-${bytesToHex(randomBytes(8))}`;
+  // Derive device DID from its public key
+  const pubKey = multibaseToPublicKey(publicKeyMultibase);
+  const deviceDID = deriveDIDKey(pubKey);
 
-  return { deviceId, nodeDID };
+  // Persist device in device registry with caller-specified role
+  const device = persistDevice(deviceName, publicKeyMultibase, role);
+
+  // Register device DID for auth resolution (callerType = 'device')
+  registerDeviceAuth(deviceDID, deviceName);
+
+  return { deviceId: device.deviceId, nodeDID: nodeDID! };
 }
 
 /**
@@ -149,5 +162,5 @@ export function purgeExpiredCodes(): number {
 /** Clear all pending codes and reset node DID (for testing). */
 export function clearPairingState(): void {
   pendingCodes.clear();
-  nodeDID = 'did:key:z6MkNode';
+  nodeDID = null;
 }

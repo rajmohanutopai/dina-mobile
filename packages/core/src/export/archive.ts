@@ -14,6 +14,7 @@
  */
 
 import { wrapSeed, unwrapSeed } from '../crypto/aesgcm';
+import { ARGON2ID_PARAMS, DINA_FILE_MAGIC, DINA_FILE_VERSION } from '../constants';
 
 export interface ArchiveHeader {
   version: number;
@@ -28,8 +29,8 @@ export interface ArchiveManifest {
   identity_size_bytes: number;
 }
 
-const ARCHIVE_MAGIC = new Uint8Array([0x44, 0x49, 0x4E, 0x41]); // "DINA"
-const ARCHIVE_VERSION = 1;
+const ARCHIVE_MAGIC = DINA_FILE_MAGIC;
+const ARCHIVE_VERSION = DINA_FILE_VERSION;
 
 /** Injectable import handler for restoring persona data. */
 let importHandler: ((manifest: ArchiveManifest) => Promise<void>) | null = null;
@@ -174,7 +175,7 @@ async function decryptArchive(
   const manifestBytes = await unwrapSeed(passphrase, {
     salt,
     wrapped,
-    params: { memory: 131072, iterations: 3, parallelism: 4 },
+    params: ARGON2ID_PARAMS,
   });
 
   return { manifestBytes };

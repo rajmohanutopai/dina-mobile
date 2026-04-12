@@ -41,7 +41,8 @@ let currentMnemonic: string | null = null;
 let identityCreatedAt: number = 0;
 let mnemonicBackup: MnemonicBackup | null = null;
 
-const MNEMONIC_DISPLAY_TTL_MS = 60_000; // 60 seconds
+import { MNEMONIC_DISPLAY_TTL_MS as MNEMONIC_TTL } from '../../../core/src/constants';
+const MNEMONIC_DISPLAY_TTL_MS = MNEMONIC_TTL;
 
 /**
  * Initialize identity from seed (called after unlock).

@@ -95,7 +95,7 @@ export function getIdentity001DDL(): string {
 }
 
 /**
- * Get the identity_002 trust cache migration DDL.
+ * Get the identity_002 trust cache DDL (applied alongside identity_001 on first boot).
  */
 export function getIdentity002DDL(): string {
   if (!identity002DDL) {

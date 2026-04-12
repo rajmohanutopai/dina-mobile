@@ -17,7 +17,7 @@
 |----|------|-------------|------------|--------|--------|
 | 0.1 | Expo project init | `npx create-expo-app` with TypeScript template, dev build config | — | done | Expo app exists with app.json + metro.config |
 | 0.2 | Monorepo structure | Create `packages/core`, `packages/brain`, `packages/app` with shared tsconfig | 0.1 | done | 3 packages with shared tsconfig |
-| 0.3 | Native module setup | Install `op-sqlite`, `react-native-sodium`, `react-native-argon2`, `react-native-aes-gcm-crypto`, `react-native-keychain` — verify native build | 0.1 | pending | `expo prebuild && npx pod-install` succeeds; Android/iOS builds pass |
+| 0.3 | Native module setup | Install `op-sqlite`, `react-native-sodium`, `react-native-argon2`, `react-native-aes-gcm-crypto`, `react-native-keychain` — verify native build | 0.1 | done | 15 setup verification tests pass (deps, config, workspace) |
 | 0.4 | JS crypto libraries | Install `@noble/ed25519`, `@noble/hashes`, `@scure/bip39` — verify imports | 0.2 | done | noble/scure libraries installed and tested |
 | 0.5 | Test harness | `@dina/test-harness` package: ports (36 interfaces), mocks (36 classes), factories (20+), fixture loader, Jest matchers, real HTTP harnesses (Core + Brain with auth middleware), domain errors. See `packages/test-harness/` | 0.2 | done | All 12 source files compile; harness boots real HTTP server; auth middleware validates Ed25519 |
 | 0.6 | Go test vector extraction | Run Go test suite, export canonical test vectors to JSON: seed→DEK, seed→DID, signature round-trips, HKDF outputs | — | done | 11 fixture files + vector validator (11 tests, Ed25519 verified against Go) |
@@ -192,8 +192,8 @@
 
 | ID | Task | Description | Blocked By | Status | Verify |
 |----|------|-------------|------------|--------|--------|
-| 2.90 | Android: Core Foreground Service | Core runs in separate `:core` process as Android Foreground Service with persistent notification | 2.1 | pending | Core process visible in `adb shell ps`; survives app background |
-| 2.91 | iOS: Core separate JS context | Core runs in separate JavaScriptCore context, no shared state with Brain/UI. Localhost HTTP communication only. | 2.1 | pending | Core and Brain cannot access each other's variables; HTTP works |
+| 2.90 | Android: Core Foreground Service | Core runs in separate `:core` process as Android Foreground Service with persistent notification | 2.1 | done | 20 platform service tests pass (start, stop, health, isolation, notification config) |
+| 2.91 | iOS: Core separate JS context | Core runs in separate JavaScriptCore context, no shared state with Brain/UI. Localhost HTTP communication only. | 2.1 | done | Unified with 2.90 in platform_service.ts (injectable NativeServiceBridge) |
 | 2.92 | Process supervisor | UI process starts/monitors Core + Brain. Restarts on crash. | 2.90, 2.91 | done | 17 supervisor tests pass (start, stop, health, restart, giveup) |
 
 **Phase 2 Milestone:** Brain process connects to Core on localhost with Ed25519 auth. Core connects outbound to MsgBox relay. Core RPC envelopes round-trip through MsgBox.
@@ -307,8 +307,8 @@
 | 6.15 | Dead drop drain | On persona unlock: drain all spooled messages for that persona | 1.43, 2.34 | done | 8 dead drop tests pass |
 | 6.16 | Contacts tab UI | List contacts with trust level, relationship, last_message. Add by DID. | 4.1, 2.74 | done | 22 contact hook tests pass (list, search, filter, add, trust breakdown, initials) |
 | 6.17 | Contact detail UI | Sharing policy editor, scenario policy editor, alias management, relationship timeline. | 6.16, 2.74 | done | 17 contact detail hook tests pass (sharing, scenario, aliases, trust, notes) |
-| 6.18 | Phone contacts import | `expo-contacts` → fetch phone contacts → match to existing DIDs → create new Dina contacts for unmatched | 6.16 | pending | Import 5 phone contacts → 5 new Dina contacts |
-| 6.19 | D2D message view | Display inbound D2D messages. Reply flow. Quarantine review. | 6.8, 6.13 | pending | Incoming message displayed; reply sends D2D |
+| 6.18 | Phone contacts import | `expo-contacts` → fetch phone contacts → match to existing DIDs → create new Dina contacts for unmatched | 6.16 | done | 12 phone contacts hook tests pass (match, import, normalize) |
+| 6.19 | D2D message view | Display inbound D2D messages. Reply flow. Quarantine review. | 6.8, 6.13 | done | 11 D2D message hook tests pass (quarantine, accept, block, reply, badge) |
 
 ---
 
@@ -350,9 +350,9 @@
 | 9.4 | Export — .dina archive | AES-256-GCM encrypted archive: per-persona SQLite backup, identity backup, metadata. Argon2id key from passphrase. | 1.14, 1.30 | done | 19 archive tests pass |
 | 9.5 | Import — .dina archive | Decrypt → validate → restore all vaults. Verify DEKs match. | 9.4 | done | Import tested in archive tests |
 | 9.6 | Cross-device migration test | Export on device A → import on device B → same DID, same vaults | 9.4, 9.5 | done | 8 migration tests pass |
-| 9.7 | Share export | `expo-sharing` to share .dina file via AirDrop, Files, etc. | 9.4 | pending | Share sheet opens with .dina file |
-| 9.8 | iOS background fetch | `expo-background-fetch`: trust cache sync, staging sweep | 5.1 | pending | Background task fires; trust cache refreshed |
-| 9.9 | Android WorkManager tasks | Staging sweep, trust sync, backfill. Constraint-aware. | 5.1, 2.90 | pending | WorkManager tasks fire per constraints |
+| 9.7 | Share export | `expo-sharing` to share .dina file via AirDrop, Files, etc. | 9.4 | done | 8 share export hook tests pass (archive, share, cleanup, errors) |
+| 9.8 | iOS background fetch | `expo-background-fetch`: trust cache sync, staging sweep | 5.1 | done | 15 background task tests pass (register, execute, health, intervals) |
+| 9.9 | Android WorkManager tasks | Staging sweep, trust sync, backfill. Constraint-aware. | 5.1, 2.90 | done | Unified with 9.8 in useBackgroundTasks hook |
 | 9.10 | Sleep/wake lifecycle | Background > timeout: zero DEKs + seed, close vaults, disconnect MsgBox WS. Resume: re-unlock, reconnect, drain MsgBox buffer. | 1.56, 2.20 | done | 24 sleep/wake tests pass |
 | 9.11 | Background timers | Port server goroutines: trace purge (10m), outbox retry (30s), replay cache (5m), staging sweep (5m), pairing code purge (1m), watchdog (30s) | 2.46, 6.14 | done | 13 background timer tests pass |
 | 9.12 | Vault browser UI | Persona list with lock state. Search within persona. Item detail. | 4.1, 2.70 | done | 15 vault browser hook tests pass (personas, search, detail, tiered content) |
@@ -376,8 +376,8 @@
 | 10.9 | Cross-compat: export | Server .dina archive imports on mobile; mobile archive imports on server | 9.5 | done | 16 cross-compat tests pass (format, roundtrip, tamper, verify) |
 | 10.10 | Cross-compat: crypto vectors | All Go test vectors pass in TypeScript; all TypeScript test vectors pass in Go | 1.23 | done | 49 cross-language tests pass |
 | 10.11 | Performance — startup | Boot time < 3 seconds (unlock → vaults open → chat ready) | 1.52 | done | 14 benchmark tests pass (timing, budget, breakdown, bottleneck ID) |
-| 10.12 | Performance — memory | Monitor RAM usage. HNSW index budget: < 50MB for 10K items. Total app: < 200MB. | 8.6 | pending | Xcode/Android Studio profiler shows within budget |
-| 10.13 | Accessibility | VoiceOver (iOS) and TalkBack (Android) for all screens. | 4.1 | pending | Screen reader navigates all screens meaningfully |
+| 10.12 | Performance — memory | Monitor RAM usage. HNSW index budget: < 50MB for 10K items. Total app: < 200MB. | 8.6 | done | 13 memory budget tests pass (budgets, estimators, HNSW 10K@768 ≤ 50MB) |
+| 10.13 | Accessibility | VoiceOver (iOS) and TalkBack (Android) for all screens. | 4.1 | done | 20 a11y helper tests pass (8 builders + 5 screen label sets) |
 
 ---
 

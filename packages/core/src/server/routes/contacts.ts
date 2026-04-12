@@ -17,6 +17,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
+import { DATA_CATEGORIES } from '../../persona/names';
 import {
   addContact, getContact, listContacts, updateContact, deleteContact,
   addAlias, removeAlias,
@@ -112,7 +113,7 @@ export function createContactsRouter(): Router {
     if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
 
     // Return known category tiers
-    const categories = ['general', 'health', 'financial', 'social', 'work'];
+    const categories = [...DATA_CATEGORIES];
     const policy: Record<string, string> = {};
     for (const cat of categories) {
       policy[cat] = getSharingTier(did, cat);

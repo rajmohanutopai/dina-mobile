@@ -149,7 +149,7 @@ describe('BrainCoreClient — Staging Fail', () => {
 });
 
 describe('BrainCoreClient — Staging Extend Lease', () => {
-  it('calls POST /v1/staging/extend', async () => {
+  it('calls POST /v1/staging/extend-lease', async () => {
     const { mockFetch, calls } = createMockFetch([
       { status: 200, body: { ok: true } },
     ]);
@@ -162,6 +162,6 @@ describe('BrainCoreClient — Staging Extend Lease', () => {
     });
 
     await client.extendStagingLease('stg-1', 300);
-    expect(calls[0].url).toContain('/v1/staging/extend');
+    expect(calls[0].url).toContain('/v1/staging/extend-lease');
   });
 });

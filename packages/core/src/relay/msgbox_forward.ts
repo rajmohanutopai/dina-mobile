@@ -16,6 +16,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { sign } from '../crypto/ed25519';
 import { toRFC3339 } from '../auth/timestamp';
+import { MSGBOX_FORWARD_SUFFIX } from '../constants';
 
 export interface ForwardHeaders {
   'X-Recipient-DID': string;
@@ -78,7 +79,7 @@ export function buildForwardHeaders(
  * Format: "POST\n/forward\n\n{timestamp}\n{nonce}\n{sha256_hex(body)}"
  */
 export function buildForwardCanonical(timestamp: string, nonce: string, bodyHash: string): string {
-  return `POST\n/forward\n\n${timestamp}\n${nonce}\n${bodyHash}`;
+  return `POST\n${MSGBOX_FORWARD_SUFFIX}\n\n${timestamp}\n${nonce}\n${bodyHash}`;
 }
 
 /**
@@ -95,7 +96,8 @@ export async function postToForward(
   headers: ForwardHeaders,
   payload: Uint8Array,
 ): Promise<ForwardResult> {
-  const url = msgboxURL.endsWith('/') ? msgboxURL + 'forward' : msgboxURL + '/forward';
+  const suffix = MSGBOX_FORWARD_SUFFIX;
+  const url = msgboxURL.endsWith('/') ? msgboxURL + suffix.slice(1) : msgboxURL + suffix;
 
   const response = await fetchFn(url, {
     method: 'POST',

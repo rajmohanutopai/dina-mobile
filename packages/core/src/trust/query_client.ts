@@ -22,8 +22,9 @@
  */
 
 import type { TrustScore } from './cache';
+import { DEFAULT_APPVIEW_URL as APPVIEW_URL, TRUST_RATING_MIN, TRUST_RATING_MAX } from '../constants';
 
-const DEFAULT_APPVIEW_URL = 'https://appview.dina.social';
+const DEFAULT_APPVIEW_URL = APPVIEW_URL;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface TrustProfile {
@@ -185,5 +186,5 @@ function parseProfile(data: Record<string, unknown>): TrustProfile {
 /** Clamp trust score to [0, 100]. */
 function clampScore(score: number): number {
   if (isNaN(score)) return 0;
-  return Math.max(0, Math.min(100, Math.round(score)));
+  return Math.max(TRUST_RATING_MIN, Math.min(TRUST_RATING_MAX, Math.round(score)));
 }

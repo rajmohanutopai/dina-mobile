@@ -54,9 +54,13 @@ describe('CLI Signing E2E (Suite 15)', () => {
     });
 
     it('pairing code is single-use', () => {
+      const { publicKeyToMultibase } = require('../../src/identity/did');
+      const mb1 = publicKeyToMultibase(getPublicKey(new Uint8Array(32).fill(0x11)));
+      const mb2 = publicKeyToMultibase(getPublicKey(new Uint8Array(32).fill(0x22)));
+
       const code = generatePairingCode();
-      completePairing(code.code, 'device-1', 'z6MkKey1');
-      expect(() => completePairing(code.code, 'device-2', 'z6MkKey2'))
+      completePairing(code.code, 'device-1', mb1);
+      expect(() => completePairing(code.code, 'device-2', mb2))
         .toThrow('invalid');
     });
 

@@ -20,6 +20,8 @@
  * Source: core/test/trust_test.go
  */
 
+import { TRUST_CACHE_TTL_MS } from '../constants';
+
 export type TrustLevel = 'blocked' | 'unknown' | 'verified' | 'trusted';
 export type TrustRing = 1 | 2 | 3;
 
@@ -48,8 +50,8 @@ const ACTION_RING_REQUIREMENTS: Record<string, TrustRing> = {
   bulk_operation: 3,
 };
 
-/** Trust cache staleness threshold: 1 hour in seconds. */
-const CACHE_STALE_SECONDS = 3600;
+/** Trust cache staleness threshold (derived from shared TTL). */
+const CACHE_STALE_SECONDS = TRUST_CACHE_TTL_MS / 1000;
 
 /**
  * Check if a trust level allows data sharing.

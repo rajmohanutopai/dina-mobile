@@ -68,8 +68,13 @@ export function signHandshake(
  * this module manages state and protocol logic.
  */
 export async function connectToMsgBox(url: string): Promise<void> {
-  if (!url.startsWith('wss://') && !url.startsWith('ws://localhost')) {
-    throw new Error('msgbox_ws: insecure URL scheme — wss:// required');
+  const isSecure = url.startsWith('wss://');
+  const isLocalDev = url.startsWith('ws://localhost') || url.startsWith('ws://127.0.0.1');
+  if (!isSecure && !isLocalDev) {
+    throw new Error('msgbox_ws: insecure URL scheme — wss:// required (ws:// only allowed for localhost)');
+  }
+  if (isLocalDev && process.env.NODE_ENV === 'production') {
+    throw new Error('msgbox_ws: ws:// not allowed in production — use wss://');
   }
   currentURL = url;
   connected = true;
