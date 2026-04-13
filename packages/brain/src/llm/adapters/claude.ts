@@ -54,6 +54,7 @@ export interface AnthropicMessageResponse {
 }
 
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+import { safeCall } from './safety';
 const DEFAULT_MODEL = DEFAULT_CLAUDE_MODEL;
 const DEFAULT_MAX_TOKENS = MAX_TOKENS;
 
@@ -82,6 +83,17 @@ export class ClaudeAdapter implements LLMProvider {
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
+    // Structured JSON output: when responseSchema is provided, use Claude's
+    // prefilled assistant technique — append an assistant message starting with '{'
+    // to force Claude to continue with valid JSON.
+    if (options?.responseSchema && conversationMessages.length > 0) {
+      const lastMsg = conversationMessages[conversationMessages.length - 1];
+      // Only prefill if the last message is from the user
+      if (lastMsg.role === 'user') {
+        conversationMessages.push({ role: 'assistant', content: '{' });
+      }
+    }
+
     const params: AnthropicCreateParams = {
       model,
       max_tokens: maxTokens,
@@ -101,9 +113,17 @@ export class ClaudeAdapter implements LLMProvider {
       }));
     }
 
-    const response = await this.client.messages.create(params);
+    const response = await safeCall(() => this.client.messages.create(params));
 
-    return mapResponse(response);
+    const result = mapResponse(response);
+
+    // If we used prefilled assistant for structured output, prepend the '{' back
+    // since Claude's response continues from where the prefill left off.
+    if (options?.responseSchema && result.content && !result.content.trimStart().startsWith('{')) {
+      result.content = '{' + result.content;
+    }
+
+    return result;
   }
 
   async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<StreamChunk> {
@@ -136,6 +156,7 @@ function mapResponse(response: AnthropicMessageResponse): ChatResponse {
       content += block.text;
     } else if (block.type === 'tool_use') {
       toolCalls.push({
+        id: block.id,
         name: block.name,
         arguments: block.input,
       });

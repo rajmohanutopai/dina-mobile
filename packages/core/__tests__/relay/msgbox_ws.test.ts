@@ -16,27 +16,69 @@ import {
   disconnect,
   resetConnectionState,
   signHandshake,
+  setWSFactory,
+  setIdentity,
+  type WSLike,
 } from '../../src/relay/msgbox_ws';
 import { verify, getPublicKey } from '../../src/crypto/ed25519';
+import { deriveDIDKey } from '../../src/identity/did';
 import { TEST_ED25519_SEED } from '@dina/test-harness';
+
+/** Mock WebSocket for testing. */
+function createMockWS(): WSLike {
+  const ws: WSLike = {
+    send: jest.fn(),
+    close: jest.fn(),
+    onopen: null, onmessage: null, onclose: null, onerror: null,
+    readyState: 1,
+  };
+  // Trigger onopen async
+  setTimeout(() => { if (ws.onopen) ws.onopen(); }, 0);
+  return ws;
+}
+
+/** Set up identity + mock factory for connection tests. */
+function setupForConnect(): void {
+  const pubKey = getPublicKey(TEST_ED25519_SEED);
+  const did = deriveDIDKey(pubKey);
+  setIdentity(did, TEST_ED25519_SEED);
+  setWSFactory(() => createMockWS());
+}
 
 describe('MsgBox WebSocket Client', () => {
   beforeEach(() => resetConnectionState());
 
   describe('connectToMsgBox', () => {
     it('connects to wss:// endpoint', async () => {
+      setupForConnect();
       await connectToMsgBox('wss://mailbox.dinakernel.com/ws');
+      await new Promise(r => setTimeout(r, 10)); // let onopen fire
       expect(isConnected()).toBe(true);
     });
 
-    it('rejects non-wss URL in production', async () => {
+    it('rejects non-wss URL', async () => {
+      setupForConnect();
       await expect(connectToMsgBox('http://insecure.com'))
-        .rejects.toThrow('insecure URL scheme');
+        .rejects.toThrow('insecure URL');
     });
 
     it('allows ws://localhost for development', async () => {
+      setupForConnect();
       await connectToMsgBox('ws://localhost:9000/ws');
+      await new Promise(r => setTimeout(r, 10));
       expect(isConnected()).toBe(true);
+    });
+
+    it('throws without WSFactory set', async () => {
+      setIdentity('did:key:test', TEST_ED25519_SEED);
+      await expect(connectToMsgBox('wss://relay.test/ws'))
+        .rejects.toThrow('no WebSocket factory');
+    });
+
+    it('throws without identity set', async () => {
+      setWSFactory(() => createMockWS());
+      await expect(connectToMsgBox('wss://relay.test/ws'))
+        .rejects.toThrow('identity not configured');
     });
   });
 
@@ -110,10 +152,10 @@ describe('MsgBox WebSocket Client', () => {
       expect(computeReconnectDelay(4)).toBe(16000);
     });
 
-    it('caps at 30000ms (30s max)', () => {
-      expect(computeReconnectDelay(5)).toBe(30000);
-      expect(computeReconnectDelay(10)).toBe(30000);
-      expect(computeReconnectDelay(100)).toBe(30000);
+    it('caps at 60000ms (60s max, matching Go)', () => {
+      expect(computeReconnectDelay(6)).toBe(60000);
+      expect(computeReconnectDelay(10)).toBe(60000);
+      expect(computeReconnectDelay(100)).toBe(60000);
     });
   });
 
@@ -123,12 +165,16 @@ describe('MsgBox WebSocket Client', () => {
     });
 
     it('isConnected after connect → true', async () => {
+      setupForConnect();
       await connectToMsgBox('wss://mailbox.dinakernel.com/ws');
+      await new Promise(r => setTimeout(r, 10));
       expect(isConnected()).toBe(true);
     });
 
     it('disconnect sets connected to false', async () => {
+      setupForConnect();
       await connectToMsgBox('wss://mailbox.dinakernel.com/ws');
+      await new Promise(r => setTimeout(r, 10));
       await disconnect();
       expect(isConnected()).toBe(false);
     });

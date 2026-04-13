@@ -13,6 +13,9 @@ import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { REQUEST_TIMEOUT_MS, STAGING_MAX_RETRIES, VAULT_QUERY_DEFAULT_LIMIT } from '../../../core/src/constants';
 import { isNonRetryableStatus, backoff, parseResponseBody } from '../../../core/src/transport/http_retry';
+import { CircuitBreaker, CircuitBreakerOpenError } from './circuit_breaker';
+
+export { CircuitBreakerOpenError };
 
 export interface BrainCoreClientConfig {
   coreURL: string;
@@ -21,6 +24,10 @@ export interface BrainCoreClientConfig {
   timeoutMs?: number;
   maxRetries?: number;
   fetch?: typeof globalThis.fetch;  // injectable for testing
+  /** Circuit breaker failure threshold (default: 5). */
+  circuitBreakerThreshold?: number;
+  /** Circuit breaker cooldown in ms (default: 30000). */
+  circuitBreakerCooldownMs?: number;
 }
 
 export class BrainCoreClient {
@@ -30,6 +37,7 @@ export class BrainCoreClient {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly fetchFn: typeof globalThis.fetch;
+  private readonly circuitBreaker: CircuitBreaker;
 
   constructor(config: BrainCoreClientConfig) {
     if (!config.coreURL) throw new Error('coreURL is required');
@@ -41,6 +49,15 @@ export class BrainCoreClient {
     this.timeoutMs = config.timeoutMs ?? REQUEST_TIMEOUT_MS;
     this.maxRetries = config.maxRetries ?? STAGING_MAX_RETRIES;
     this.fetchFn = config.fetch ?? globalThis.fetch;
+    this.circuitBreaker = new CircuitBreaker({
+      failureThreshold: config.circuitBreakerThreshold,
+      cooldownMs: config.circuitBreakerCooldownMs,
+    });
+  }
+
+  /** Get the circuit breaker status (for health monitoring). */
+  getCircuitBreakerStatus() {
+    return this.circuitBreaker.getStatus();
   }
 
   /** Read a vault item from Core. */
@@ -134,7 +151,24 @@ export class BrainCoreClient {
    * Signs each attempt fresh (nonce + timestamp must be unique).
    * Retries on 5xx and connection errors. Fails immediately on 401/403.
    */
+  /** Set an external requestId for audit trail correlation. */
+  private externalRequestId: string | null = null;
+
+  /** Bind a request ID from an external trace (e.g., chat reasoning trace). */
+  setRequestId(requestId: string | null): void {
+    this.externalRequestId = requestId;
+  }
+
   private async signedRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    // Circuit breaker wraps the entire retry loop
+    return this.circuitBreaker.execute(() => this.signedRequestInner(method, path, body));
+  }
+
+  private async signedRequestInner(
     method: string,
     path: string,
     body?: unknown,
@@ -142,7 +176,8 @@ export class BrainCoreClient {
     const url = `${this.coreURL}${path}`;
     const bodyStr = body !== undefined ? JSON.stringify(body) : '';
     const bodyBytes = new TextEncoder().encode(bodyStr);
-    const requestId = `req-${bytesToHex(randomBytes(8))}`;
+    // Use external requestId if bound (for audit correlation), otherwise generate fresh
+    const requestId = this.externalRequestId ?? `req-${bytesToHex(randomBytes(8))}`;
 
     let lastError: Error | null = null;
 

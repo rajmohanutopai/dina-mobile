@@ -1,23 +1,26 @@
 /**
  * Staging pipeline state machine.
  *
- * States: received → classifying → stored | pending_unlock | failed
+ * States: received → classifying → stored | pending_unlock | pending_approval | failed
  *
  * Transitions:
- *   received       → classifying       (claim with 15-min lease)
- *   classifying    → stored            (resolve to open persona)
- *   classifying    → pending_unlock    (resolve to locked persona)
- *   classifying    → failed            (classification/enrichment error)
- *   classifying    → received          (lease expired, sweep reverts)
- *   failed         → received          (retry if retry_count ≤ 3)
- *   pending_unlock → stored            (persona unlocked, drain)
+ *   received          → classifying       (claim with 15-min lease)
+ *   classifying       → stored            (resolve to open persona)
+ *   classifying       → pending_unlock    (resolve to locked persona)
+ *   classifying       → pending_approval  (requires user approval for sensitive persona)
+ *   classifying       → failed            (classification/enrichment error)
+ *   classifying       → received          (lease expired, sweep reverts)
+ *   failed            → received          (retry if retry_count ≤ 3)
+ *   pending_unlock    → stored            (persona unlocked, drain)
+ *   pending_approval  → classifying       (approval granted, resume processing)
+ *   pending_approval  → failed            (approval denied)
  *
  * Terminal states: stored (no outbound transitions)
  *
  * Source: core/test/staging_inbox_test.go
  */
 
-export type StagingStatus = 'received' | 'classifying' | 'stored' | 'pending_unlock' | 'failed';
+export type StagingStatus = 'received' | 'classifying' | 'stored' | 'pending_unlock' | 'pending_approval' | 'failed';
 
 export interface StagingTransition {
   from: StagingStatus;
@@ -34,11 +37,12 @@ const DEFAULT_MAX_RETRIES = STAGING_MAX_RETRIES;
  * Adjacency list: for each state, the set of valid next states.
  */
 const TRANSITIONS: Record<StagingStatus, Set<StagingStatus>> = {
-  received:       new Set(['classifying']),
-  classifying:    new Set(['stored', 'pending_unlock', 'failed', 'received']),
-  stored:         new Set(),                       // terminal
-  pending_unlock: new Set(['stored']),
-  failed:         new Set(['received']),            // retry
+  received:         new Set(['classifying']),
+  classifying:      new Set(['stored', 'pending_unlock', 'pending_approval', 'failed', 'received']),
+  stored:           new Set(),                       // terminal
+  pending_unlock:   new Set(['stored']),
+  pending_approval: new Set(['classifying', 'failed']), // approval granted → resume, denied → fail
+  failed:           new Set(['received']),            // retry
 };
 
 /**

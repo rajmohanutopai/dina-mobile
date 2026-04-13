@@ -145,6 +145,34 @@ describe('OpenRouterAdapter', () => {
       expect(body.tools[0].function.name).toBe('search');
     });
 
+    it('passes response_format when responseSchema is provided', async () => {
+      const { mockFetch, calls } = createMockFetch(TEXT_RESPONSE);
+      const adapter = new OpenRouterAdapter(makeConfig(mockFetch));
+
+      await adapter.chat(
+        [{ role: 'user', content: 'Classify this' }],
+        {
+          responseSchema: {
+            type: 'object',
+            properties: { persona: { type: 'string' } },
+          },
+        },
+      );
+
+      const body = JSON.parse(calls[0].init.body as string);
+      expect(body.response_format).toEqual({ type: 'json_object' });
+    });
+
+    it('does NOT set response_format when no schema provided', async () => {
+      const { mockFetch, calls } = createMockFetch(TEXT_RESPONSE);
+      const adapter = new OpenRouterAdapter(makeConfig(mockFetch));
+
+      await adapter.chat([{ role: 'user', content: 'Hello' }]);
+
+      const body = JSON.parse(calls[0].init.body as string);
+      expect(body.response_format).toBeUndefined();
+    });
+
     it('uses custom model', async () => {
       const { mockFetch, calls } = createMockFetch(TEXT_RESPONSE);
       const adapter = new OpenRouterAdapter(makeConfig(mockFetch, 'anthropic/claude-sonnet-4-6'));

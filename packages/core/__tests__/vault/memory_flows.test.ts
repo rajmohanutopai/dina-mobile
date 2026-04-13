@@ -75,8 +75,8 @@ describe('Memory Flows Integration', () => {
       deleteItem('general', item.id);
       const results = queryVault('general', makeSearchQuery({ text: 'deletable' }));
       expect(results).toHaveLength(0);
-      // But still accessible via getItem (soft delete)
-      expect(getItem('general', item.id)!.deleted).toBe(1);
+      // getItem returns null for deleted items (matching Go)
+      expect(getItem('general', item.id)).toBeNull();
     });
   });
 

@@ -88,7 +88,7 @@ export function createBrainApp() {
   });
 
   // POST /v1/process — event processing (stub, wired in Phase 3.26)
-  app.post('/v1/process', (req: Request, res: Response) => {
+  app.post('/v1/process', async (req: Request, res: Response) => {
     try {
       const body = parseJSON(req);
       const event = String(body.event ?? '');
@@ -96,7 +96,7 @@ export function createBrainApp() {
       if (!event) { res.status(400).json({ error: 'event is required' }); return; }
 
       // Event processing wired to the real event processor
-      const result = processEvent({ event: event as import('../pipeline/event_processor').EventType, data: body });
+      const result = await processEvent({ event: event as import('../pipeline/event_processor').EventType, data: body });
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });

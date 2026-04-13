@@ -1,18 +1,21 @@
 /**
  * W3C DID Document construction and validation.
  *
- * Structure matches server exactly:
- * - @context: ["https://www.w3.org/ns/did/v1"]
- * - verificationMethod: Ed25519VerificationKey2020 with publicKeyMultibase
+ * Structure aligned with Go's identity adapter:
+ * - @context: ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"]
+ * - verificationMethod: Multikey type with publicKeyMultibase
+ * - Fragment: #key-1 (singular, matching Go)
  * - service: [{ id: "#dina-messaging", type: "DinaMsgBox", serviceEndpoint: "wss://..." }]
- * - authentication + assertionMethod reference the verification method
+ * - created: ISO 8601 timestamp
+ * - authentication references the verification method
  *
  * Source: core/internal/adapter/identity/did_document.go
  */
 
+/** Multikey verification method (matching Go's Multikey type). */
 export interface VerificationMethod {
   id: string;
-  type: 'Ed25519VerificationKey2020';
+  type: 'Multikey';
   controller: string;
   publicKeyMultibase: string;
 }
@@ -28,12 +31,25 @@ export interface DIDDocument {
   id: string;
   verificationMethod: VerificationMethod[];
   authentication: string[];
-  assertionMethod: string[];
   service: ServiceEndpoint[];
+  /** ISO 8601 creation timestamp (matching Go's created_at). */
+  created?: string;
 }
+
+/** DID v1 context (W3C standard). */
+const DID_V1_CONTEXT = 'https://www.w3.org/ns/did/v1';
+
+/** Multikey context (required for Multikey verification method type). */
+const MULTIKEY_CONTEXT = 'https://w3id.org/security/multikey/v1';
 
 /**
  * Build a W3C DID Document from identity material.
+ *
+ * Produces a document compatible with Go's identity system:
+ * - Two @context values (DID v1 + Multikey v1)
+ * - Multikey verification method type
+ * - #key-1 fragment (singular, matching Go)
+ * - created timestamp
  *
  * @param did - The DID (did:plc:... or did:key:...)
  * @param publicKeyMultibase - z-prefixed multibase Ed25519 public key
@@ -44,22 +60,22 @@ export function buildDIDDocument(
   publicKeyMultibase: string,
   msgboxEndpoint?: string,
 ): DIDDocument {
-  const vmId = `${did}#keys-1`;
+  const vmId = `${did}#key-1`;
 
   const doc: DIDDocument = {
-    '@context': ['https://www.w3.org/ns/did/v1'],
+    '@context': [DID_V1_CONTEXT, MULTIKEY_CONTEXT],
     id: did,
     verificationMethod: [
       {
         id: vmId,
-        type: 'Ed25519VerificationKey2020',
+        type: 'Multikey',
         controller: did,
         publicKeyMultibase,
       },
     ],
     authentication: [vmId],
-    assertionMethod: [vmId],
     service: [],
+    created: new Date().toISOString(),
   };
 
   if (msgboxEndpoint) {
@@ -80,8 +96,11 @@ export function buildDIDDocument(
 export function validateDIDDocument(doc: DIDDocument): string[] {
   const errors: string[] = [];
 
-  if (!doc['@context'] || !doc['@context'].includes('https://www.w3.org/ns/did/v1')) {
+  if (!doc['@context'] || !doc['@context'].includes(DID_V1_CONTEXT)) {
     errors.push('@context must include W3C DID v1 context');
+  }
+  if (!doc['@context'] || !doc['@context'].includes(MULTIKEY_CONTEXT)) {
+    errors.push('@context must include Multikey v1 context');
   }
   if (!doc.id) {
     errors.push('id is required');
@@ -90,8 +109,8 @@ export function validateDIDDocument(doc: DIDDocument): string[] {
     errors.push('at least one verificationMethod is required');
   } else {
     const vm = doc.verificationMethod[0];
-    if (vm.type !== 'Ed25519VerificationKey2020') {
-      errors.push('verificationMethod type must be Ed25519VerificationKey2020');
+    if (vm.type !== 'Multikey') {
+      errors.push('verificationMethod type must be Multikey');
     }
     if (vm.controller !== doc.id) {
       errors.push('verificationMethod controller must match document id');
@@ -102,9 +121,6 @@ export function validateDIDDocument(doc: DIDDocument): string[] {
   }
   if (!doc.authentication || doc.authentication.length === 0) {
     errors.push('authentication is required');
-  }
-  if (!doc.assertionMethod || doc.assertionMethod.length === 0) {
-    errors.push('assertionMethod is required');
   }
 
   return errors;

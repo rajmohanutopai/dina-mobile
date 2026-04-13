@@ -13,12 +13,16 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { MS_DAY } from '../constants';
+import { getReminderRepository } from './repository';
 
 export type RecurringFrequency = '' | 'daily' | 'weekly' | 'monthly';
 
 export interface Reminder {
   id: string;
+  /** 4-char short ID for user-friendly reference (e.g., "snooze abc1"). */
+  short_id: string;
   message: string;
   due_at: number;
   recurring: RecurringFrequency;
@@ -37,6 +41,34 @@ const reminders = new Map<string, Reminder>();
 
 /** Dedup index: compound key → reminder ID. */
 const dedupIndex = new Map<string, string>();
+
+/** Short ID → full ID index for user-friendly lookup. */
+const shortIdIndex = new Map<string, string>();
+
+/**
+ * Generate a 4-char short ID from the full reminder ID.
+ *
+ * Uses first 4 hex chars of SHA-256 hash of the ID.
+ * On collision, appends a suffix digit.
+ */
+function generateShortId(fullId: string): string {
+  const hash = bytesToHex(sha256(new TextEncoder().encode(fullId)));
+  let shortId = hash.slice(0, 4);
+
+  // Handle collision: append suffix digit if 4-char is taken
+  let suffix = 0;
+  while (shortIdIndex.has(shortId) && shortIdIndex.get(shortId) !== fullId) {
+    suffix++;
+    shortId = hash.slice(0, 3) + suffix.toString(16);
+    if (suffix > 15) {
+      // Extremely unlikely: fall back to longer hash
+      shortId = hash.slice(0, 6);
+      break;
+    }
+  }
+
+  return shortId;
+}
 
 /** Build dedup key from the compound fields. */
 function dedupKey(sourceItemId: string, kind: string, dueAt: number, persona: string): string {
@@ -70,11 +102,13 @@ export function createReminder(input: {
     if (existing) return existing;
   }
 
-  const id = `rem-${bytesToHex(randomBytes(8))}`;
+  const id = `rem-${bytesToHex(randomBytes(16))}`;
+  const shortId = generateShortId(id);
   const now = Date.now();
 
   const reminder: Reminder = {
     id,
+    short_id: shortId,
     message: input.message,
     due_at: input.due_at,
     recurring: input.recurring ?? '',
@@ -89,13 +123,28 @@ export function createReminder(input: {
   };
 
   reminders.set(id, reminder);
+  shortIdIndex.set(shortId, id);
   dedupIndex.set(dk, id);
+  // SQL write-through
+  const sqlRepo = getReminderRepository();
+  if (sqlRepo) { try { sqlRepo.create(reminder); } catch { /* fail-safe */ } }
   return reminder;
 }
 
 /** Get a reminder by ID. */
 export function getReminder(id: string): Reminder | null {
   return reminders.get(id) ?? null;
+}
+
+/**
+ * Get a reminder by its 4-char short ID.
+ *
+ * Used for user-friendly commands like "snooze abc1" or "complete f3e2".
+ */
+export function getByShortId(shortId: string): Reminder | null {
+  const fullId = shortIdIndex.get(shortId.toLowerCase());
+  if (!fullId) return null;
+  return reminders.get(fullId) ?? null;
 }
 
 /**
@@ -113,6 +162,52 @@ export function listPending(now?: number): Reminder[] {
   }
 
   return pending.sort((a, b) => a.due_at - b.due_at);
+}
+
+/**
+ * Get the single earliest pending reminder (due_at <= now).
+ *
+ * Returns null if no reminders are due. Used by the reminder firing
+ * loop to process one reminder at a time — matching Go's NextPending.
+ */
+export function nextPending(now?: number): Reminder | null {
+  const currentTime = now ?? Date.now();
+  let earliest: Reminder | null = null;
+
+  for (const r of reminders.values()) {
+    if (r.completed === 0 && r.status === 'pending' && r.due_at <= currentTime) {
+      if (!earliest || r.due_at < earliest.due_at) {
+        earliest = r;
+      }
+    }
+  }
+
+  return earliest;
+}
+
+/**
+ * Fire all missed reminders — past-due pending reminders that were
+ * not fired because the app was backgrounded or restarted.
+ *
+ * Matches Go's startup recovery: fires past-due reminders on startup.
+ * Returns the list of fired reminders. Each is marked status='fired'.
+ *
+ * @param onFire — optional callback invoked for each fired reminder
+ */
+export function fireMissedReminders(
+  now?: number,
+  onFire?: (reminder: Reminder) => void,
+): Reminder[] {
+  const pending = listPending(now);
+  const fired: Reminder[] = [];
+
+  for (const r of pending) {
+    r.status = 'fired';
+    fired.push(r);
+    if (onFire) onFire(r);
+  }
+
+  return fired;
 }
 
 /**
@@ -167,6 +262,7 @@ export function deleteReminder(id: string): boolean {
 
   const dk = dedupKey(reminder.source_item_id, reminder.kind, reminder.due_at, reminder.persona);
   dedupIndex.delete(dk);
+  shortIdIndex.delete(reminder.short_id);
   reminders.delete(id);
   return true;
 }
@@ -185,4 +281,5 @@ function computeNextOccurrence(dueAt: number, frequency: RecurringFrequency): nu
 export function resetReminderState(): void {
   reminders.clear();
   dedupIndex.clear();
+  shortIdIndex.clear();
 }

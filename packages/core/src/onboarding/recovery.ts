@@ -15,7 +15,7 @@
  * Source: ARCHITECTURE.md Task 4.3
  */
 
-import { validateMnemonic, mnemonicToSeed } from '../crypto/bip39';
+import { validateMnemonic, mnemonicToEntropy } from '../crypto/bip39';
 import { deriveRootSigningKey } from '../crypto/slip0010';
 import { deriveDIDKey } from '../identity/did';
 import { wrapSeed } from '../crypto/aesgcm';
@@ -48,8 +48,8 @@ export async function recoverFromMnemonic(
     throw new Error('recovery: invalid mnemonic — checksum or wordlist mismatch');
   }
 
-  // 3. Derive seed
-  const seed = mnemonicToSeed(mnemonicStr);
+  // 3. Extract 32-byte entropy (Go-compatible master seed)
+  const seed = mnemonicToEntropy(mnemonicStr);
 
   // 4. Derive root key + DID
   const rootKey = deriveRootSigningKey(seed, 0);

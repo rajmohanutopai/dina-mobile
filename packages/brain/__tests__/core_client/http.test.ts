@@ -200,5 +200,25 @@ describe('Brain Core Client', () => {
       expect(headers['X-Signature']).toMatch(/^[0-9a-f]+$/);
       expect(headers['X-Request-ID']).toMatch(/^req-/);
     });
+
+    it('uses external requestId when set via setRequestId()', async () => {
+      const fetch = mockFetch(200);
+      const client = makeClient({ fetch });
+      client.setRequestId('req-trace-abc123');
+      await client.readVaultItem('general', 'item-001');
+      const headers = (fetch.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+      expect(headers['X-Request-ID']).toBe('req-trace-abc123');
+    });
+
+    it('uses auto-generated requestId when setRequestId(null)', async () => {
+      const fetch = mockFetch(200);
+      const client = makeClient({ fetch });
+      client.setRequestId('req-temp');
+      client.setRequestId(null); // clear it
+      await client.readVaultItem('general', 'item-001');
+      const headers = (fetch.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+      expect(headers['X-Request-ID']).toMatch(/^req-[0-9a-f]+$/);
+      expect(headers['X-Request-ID']).not.toBe('req-temp');
+    });
   });
 });

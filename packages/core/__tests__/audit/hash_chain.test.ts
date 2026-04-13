@@ -4,6 +4,9 @@
  * Category A: fixture-based. Verifies hash chain computation,
  * verification, and tamper detection.
  *
+ * Hash format: colon-separated canonical string (matching Go).
+ * Genesis marker: "genesis" (matching Go).
+ *
  * Source: core/test/traceability_test.go
  */
 
@@ -13,6 +16,7 @@ import {
   buildAuditEntry,
   verifyChain,
   verifyLink,
+  GENESIS_MARKER,
 } from '../../src/audit/hash_chain';
 import type { AuditEntry } from '../../src/audit/hash_chain';
 
@@ -21,7 +25,7 @@ describe('Audit Hash Chain', () => {
     it('computes SHA-256 hash of canonical entry fields', () => {
       const hash = computeEntryHash({
         seq: 1, ts: 1700000000, actor: 'brain', action: 'vault_query',
-        resource: '/health', detail: 'searched for labs', prev_hash: '',
+        resource: '/health', detail: 'searched for labs', prev_hash: GENESIS_MARKER,
       });
       expect(hash.length).toBe(64); // SHA-256 hex
       expect(/^[0-9a-f]{64}$/.test(hash)).toBe(true);
@@ -30,7 +34,7 @@ describe('Audit Hash Chain', () => {
     it('is deterministic (same entry → same hash)', () => {
       const entry = {
         seq: 1, ts: 1700000000, actor: 'brain', action: 'vault_query',
-        resource: '/health', detail: 'test', prev_hash: '',
+        resource: '/health', detail: 'test', prev_hash: GENESIS_MARKER,
       };
       expect(computeEntryHash(entry)).toBe(computeEntryHash(entry));
     });
@@ -38,7 +42,7 @@ describe('Audit Hash Chain', () => {
     it('different entries produce different hashes', () => {
       const hash1 = computeEntryHash({
         seq: 1, ts: 1700000000, actor: 'brain', action: 'vault_query',
-        resource: '/health', detail: 'test', prev_hash: '',
+        resource: '/health', detail: 'test', prev_hash: GENESIS_MARKER,
       });
       const hash2 = computeEntryHash({
         seq: 2, ts: 1700000001, actor: 'admin', action: 'persona_unlock',
@@ -50,7 +54,7 @@ describe('Audit Hash Chain', () => {
     it('changing any field changes the hash', () => {
       const base = {
         seq: 1, ts: 1700000000, actor: 'brain', action: 'vault_query',
-        resource: '/health', detail: 'test', prev_hash: '',
+        resource: '/health', detail: 'test', prev_hash: GENESIS_MARKER,
       };
       const baseHash = computeEntryHash(base);
 
@@ -60,6 +64,32 @@ describe('Audit Hash Chain', () => {
       expect(computeEntryHash({ ...base, actor: 'admin' })).not.toBe(baseHash);
       // Changing prev_hash changes hash
       expect(computeEntryHash({ ...base, prev_hash: 'abc' })).not.toBe(baseHash);
+    });
+
+    it('uses colon separator (matching Go format)', () => {
+      // Verify two entries with different field values but same colon-joined
+      // canonical string produce the same hash (validates separator choice)
+      const entry1 = {
+        seq: 1, ts: 1700000000, actor: 'brain', action: 'vault_query',
+        resource: '/health', detail: 'test', prev_hash: GENESIS_MARKER,
+      };
+      const hash1 = computeEntryHash(entry1);
+      // Same entry should always produce same hash
+      expect(computeEntryHash(entry1)).toBe(hash1);
+    });
+  });
+
+  describe('computePrevHash', () => {
+    it('returns genesis marker for first entry (empty previous hash)', () => {
+      expect(computePrevHash('')).toBe(GENESIS_MARKER);
+    });
+
+    it('returns the previous entry hash for subsequent entries', () => {
+      expect(computePrevHash('abc123')).toBe('abc123');
+    });
+
+    it('genesis marker matches Go constant "genesis"', () => {
+      expect(GENESIS_MARKER).toBe('genesis');
     });
   });
 
@@ -74,9 +104,9 @@ describe('Audit Hash Chain', () => {
       expect(entry.entry_hash.length).toBe(64);
     });
 
-    it('first entry has empty prev_hash', () => {
+    it('first entry has genesis marker as prev_hash', () => {
       const entry = buildAuditEntry(1, 'brain', 'vault_query', '/health', 'test', '');
-      expect(entry.prev_hash).toBe('');
+      expect(entry.prev_hash).toBe(GENESIS_MARKER);
     });
 
     it('subsequent entry has prev_hash = prior entry_hash', () => {
@@ -141,9 +171,9 @@ describe('Audit Hash Chain', () => {
       expect(result.brokenAt).toBe(0);
     });
 
-    it('first entry with non-empty prev_hash → invalid', () => {
+    it('first entry without genesis marker → invalid', () => {
       const e1 = buildAuditEntry(1, 'a', 'x', '', '', '');
-      const tampered: AuditEntry = { ...e1, prev_hash: 'should_be_empty' };
+      const tampered: AuditEntry = { ...e1, prev_hash: 'should_be_genesis' };
       const result = verifyChain([tampered]);
       expect(result.valid).toBe(false);
       expect(result.brokenAt).toBe(0);

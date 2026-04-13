@@ -109,7 +109,7 @@ describe('Vault Browser Hook (9.12)', () => {
         content_l0: 'L0 headline',
         content_l1: 'L1 paragraph summary',
         sender: 'alice@example.com',
-        sender_trust: 'verified',
+        sender_trust: 'contact_ring1',
       });
 
       const detail = getItemDetail('general', id);
@@ -122,7 +122,7 @@ describe('Vault Browser Hook (9.12)', () => {
       expect(detail!.contentL0).toBe('L0 headline');
       expect(detail!.contentL1).toBe('L1 paragraph summary');
       expect(detail!.sender).toBe('alice@example.com');
-      expect(detail!.senderTrust).toBe('verified');
+      expect(detail!.senderTrust).toBe('contact_ring1');
     });
 
     it('returns null for closed persona', () => {

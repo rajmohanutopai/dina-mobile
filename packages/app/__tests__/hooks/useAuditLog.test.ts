@@ -27,11 +27,16 @@ describe('Audit Log Hook (9.13)', () => {
       const entries = getAuditEntries();
       expect(entries).toHaveLength(2);
 
+      // Entries returned newest-first
       const first = entries[0];
-      expect(first.actor).toBe('brain');
-      expect(first.action).toBe('vault_store');
-      expect(first.actionLabel).toBe('Stored vault item');
-      expect(first.hasHash).toBe(true);
+      expect(first.actor).toBe('user');
+      expect(first.action).toBe('persona_unlock');
+
+      const second = entries[1];
+      expect(second.actor).toBe('brain');
+      expect(second.action).toBe('vault_store');
+      expect(second.actionLabel).toBe('Stored vault item');
+      expect(second.hasHash).toBe(true);
       expect(first.timeLabel).toBeTruthy();
     });
 

@@ -153,14 +153,17 @@ export function parseReminderPlan(raw: string): ReminderPlanOutput {
 
   if (!Array.isArray(obj.reminders)) return { ...REMINDER_PLAN_DEFAULT };
 
+  // Accept both parser schema (due_at, kind) and prompt schema (due_relative, priority)
+  // Fix: Codex #11 — prompt and parser used different field names
   const reminders = (obj.reminders as Array<Record<string, unknown>>)
     .filter(r => typeof r === 'object' && r !== null)
     .map(r => ({
       message: typeof r.message === 'string' ? r.message : '',
       due_at: typeof r.due_at === 'number' ? r.due_at : 0,
-      kind: typeof r.kind === 'string' ? r.kind : 'manual',
+      kind: typeof r.kind === 'string' ? r.kind
+        : typeof r.priority === 'string' ? r.priority : 'manual',
     }))
-    .filter(r => r.message.length > 0 && r.due_at > 0);
+    .filter(r => r.message.length > 0);
 
   return { reminders };
 }

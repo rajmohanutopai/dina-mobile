@@ -126,6 +126,35 @@ describe('HNSW Vector Index (8.6)', () => {
       expect(() => index.insert('a', new Float32Array([1, 0]))).toThrow('4 dimensions');
     });
 
+    it('rejects NaN values in vectors', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      expect(() => index.insert('a', new Float32Array([1, NaN, 0, 0])))
+        .toThrow('NaN or Infinity');
+    });
+
+    it('rejects Infinity values in vectors', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      expect(() => index.insert('a', new Float32Array([1, Infinity, 0, 0])))
+        .toThrow('NaN or Infinity');
+    });
+
+    it('rejects negative Infinity', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      expect(() => index.insert('a', new Float32Array([1, -Infinity, 0, 0])))
+        .toThrow('NaN or Infinity');
+    });
+
+    it('reports the index of the invalid value', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      expect(() => index.insert('a', new Float32Array([0, 0, NaN, 0])))
+        .toThrow('index 2');
+    });
+
+    it('accepts valid float values including zero and negative', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      expect(() => index.insert('a', new Float32Array([0, -0.5, 0.999, -1]))).not.toThrow();
+    });
+
     it('rejects wrong dimensions on search', () => {
       const index = new HNSWIndex({ dimensions: 4 });
       index.insert('a', new Float32Array([1, 0, 0, 0]));
@@ -207,6 +236,62 @@ describe('HNSW Vector Index (8.6)', () => {
       const results = index.search(directedVector(8, 0), 5);
       const ids = results.map(r => r.id);
       expect(ids.every(id => id.startsWith('a-'))).toBe(true);
+    });
+  });
+
+  describe('update (delete + re-insert)', () => {
+    it('moves a node to a new position and finds it there', () => {
+      const index = new HNSWIndex({ dimensions: 8 });
+
+      // Insert 3 nodes: A near dim 0, B near dim 4, target near dim 0
+      index.insert('a', directedVector(8, 0));
+      index.insert('b', directedVector(8, 4));
+      index.insert('target', directedVector(8, 0, 0.95));
+
+      // Verify target is found when searching near dim 0
+      let results = index.search(directedVector(8, 0), 2);
+      expect(results.map(r => r.id)).toContain('target');
+
+      // Now update target to point near dim 4 instead
+      index.insert('target', directedVector(8, 4, 0.95));
+
+      // Target should now be found near dim 4, NOT near dim 0
+      results = index.search(directedVector(8, 4), 2);
+      expect(results.map(r => r.id)).toContain('target');
+
+      // And should NOT be the closest to dim 0 anymore
+      results = index.search(directedVector(8, 0), 1);
+      expect(results[0].id).toBe('a'); // 'a' should be closest to dim 0
+    });
+
+    it('preserves node count after update', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+      index.insert('x', new Float32Array([1, 0, 0, 0]));
+      index.insert('y', new Float32Array([0, 1, 0, 0]));
+
+      expect(index.size).toBe(2);
+
+      // Update x — should still have 2 nodes, not 3
+      index.insert('x', new Float32Array([0, 0, 1, 0]));
+      expect(index.size).toBe(2);
+    });
+
+    it('rebuilds edges correctly after multiple updates', () => {
+      const index = new HNSWIndex({ dimensions: 4 });
+
+      // Build a small cluster
+      index.insert('a', new Float32Array([1, 0, 0, 0]));
+      index.insert('b', new Float32Array([0, 1, 0, 0]));
+      index.insert('c', new Float32Array([0, 0, 1, 0]));
+
+      // Update 'a' to be near 'c'
+      index.insert('a', new Float32Array([0, 0, 0.99, 0]));
+
+      // Search near dim 2 — should find both 'c' and 'a' (now close together)
+      const results = index.search(new Float32Array([0, 0, 1, 0]), 2);
+      const ids = results.map(r => r.id);
+      expect(ids).toContain('a');
+      expect(ids).toContain('c');
     });
   });
 });

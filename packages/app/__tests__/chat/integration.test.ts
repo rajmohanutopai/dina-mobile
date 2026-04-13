@@ -34,9 +34,9 @@ describe('Chat Integration', () => {
       expect(doc.id).toBe(did);
     });
 
-    it('verification method type is Ed25519VerificationKey2020', () => {
+    it('verification method type is Multikey', () => {
       const doc = buildDIDDocument(did, pubKeyMultibase);
-      expect(doc.verificationMethod[0].type).toBe('Ed25519VerificationKey2020');
+      expect(doc.verificationMethod[0].type).toBe('Multikey');
     });
   });
 
@@ -77,10 +77,10 @@ describe('Chat Integration', () => {
     it('signed items have signature in metadata', () => {
       const sig = signCanonical('{"test":true}', TEST_ED25519_SEED);
       storeItem('general', {
-        summary: 'Signed verdict', type: 'verdict',
+        summary: 'Signed verdict', type: 'note',
         metadata: JSON.stringify({ signature_hex: sig, signer_did: did }),
       });
-      const item = queryVault('general', { mode: 'fts5', text: 'verdict', limit: 1 })[0];
+      const item = queryVault('general', { mode: 'fts5', text: 'signed', limit: 1 })[0];
       const meta = JSON.parse(item.metadata);
       expect(meta.signature_hex).toBeTruthy();
     });
@@ -118,11 +118,11 @@ describe('Chat Integration', () => {
       const sig = signCanonical(canonical, TEST_ED25519_SEED);
 
       storeItem('general', {
-        summary: 'Product verdict', type: 'verdict',
+        summary: 'Product verdict', type: 'note',
         metadata: JSON.stringify({ signature_hex: sig, verdict_canonical: canonical }),
       });
 
-      const stored = queryVault('general', { mode: 'fts5', text: 'verdict', limit: 1 })[0];
+      const stored = queryVault('general', { mode: 'fts5', text: 'product', limit: 1 })[0];
       const meta = JSON.parse(stored.metadata);
       expect(verifyCanonical(meta.verdict_canonical, meta.signature_hex, pubKey)).toBe(true);
     });

@@ -26,15 +26,41 @@ export interface PersonaState {
 /** In-memory persona registry. */
 const personas = new Map<string, PersonaState>();
 
+/** Regex for valid persona names: lowercase alphanumeric + underscores only.
+ *  Matches Go: domain.NewPersonaName() validates [a-z0-9_]. */
+const PERSONA_NAME_REGEX = /^[a-z0-9_]+$/;
+
+/**
+ * Validate a persona name string.
+ *
+ * Rules (from Go domain/identity.go):
+ * - Cannot be empty
+ * - Only lowercase letters, digits, and underscores
+ * - Normalized: trimmed + lowercased before validation
+ *
+ * Returns null if valid, or an error message.
+ */
+export function validatePersonaName(name: string): string | null {
+  if (!name || name.trim().length === 0) {
+    return 'persona name is required';
+  }
+  const normalized = name.trim().toLowerCase();
+  if (!PERSONA_NAME_REGEX.test(normalized)) {
+    return `persona name "${normalized}" contains invalid characters (only a-z, 0-9, _ allowed)`;
+  }
+  return null;
+}
+
 /**
  * Create a new persona with the given tier.
  *
  * Throws if a persona with the same name already exists.
- * Names are normalized to lowercase for uniqueness checking.
+ * Names are validated: only lowercase alphanumeric + underscores.
  */
 export function createPersona(name: string, tier: PersonaTier, description?: string): PersonaState {
-  if (!name || name.trim().length === 0) {
-    throw new Error('persona: name is required');
+  const validationError = validatePersonaName(name);
+  if (validationError) {
+    throw new Error(`persona: ${validationError}`);
   }
 
   const normalized = name.trim().toLowerCase();
@@ -103,7 +129,14 @@ export function openPersona(name: string, approved?: boolean): boolean {
   return true;
 }
 
-/** Close a persona (mark vault as inaccessible). */
+/**
+ * Close a persona (mark vault as inaccessible).
+ *
+ * No tier guard here — the orchestrator's lockAllPersonas() needs to close
+ * every persona on app background/shutdown, including default/standard.
+ * The tier guard (reject locking default/standard) lives at the HTTP handler
+ * level in routes/persona.ts, matching Go's HandleLockPersona design.
+ */
 export function closePersona(name: string): void {
   const persona = getPersona(name);
   if (!persona) throw new Error(`persona: "${name}" not found`);

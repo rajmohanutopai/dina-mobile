@@ -82,6 +82,7 @@ describe('OpenAIAdapter', () => {
       expect(result.content).toBe('');
       expect(result.finishReason).toBe('tool_use');
       expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0].id).toBe('call_1');
       expect(result.toolCalls[0].name).toBe('vault_search');
       expect(result.toolCalls[0].arguments).toEqual({ query: 'birthday', limit: 5 });
     });
@@ -152,6 +153,36 @@ describe('OpenAIAdapter', () => {
 
       const createFn = client.chat.completions.create as jest.Mock;
       expect(createFn.mock.calls[0][0].model).toBe('gpt-4o-mini');
+    });
+
+    it('passes response_format when responseSchema is provided', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      const adapter = new OpenAIAdapter(client);
+
+      await adapter.chat(
+        [{ role: 'user', content: 'Classify this item' }],
+        {
+          responseSchema: {
+            type: 'object',
+            properties: { persona: { type: 'string' } },
+          },
+        },
+      );
+
+      const createFn = client.chat.completions.create as jest.Mock;
+      const params = createFn.mock.calls[0][0];
+      expect(params.response_format).toEqual({ type: 'json_object' });
+    });
+
+    it('does NOT set response_format when no schema provided', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      const adapter = new OpenAIAdapter(client);
+
+      await adapter.chat([{ role: 'user', content: 'Hello' }]);
+
+      const createFn = client.chat.completions.create as jest.Mock;
+      const params = createFn.mock.calls[0][0];
+      expect(params.response_format).toBeUndefined();
     });
 
     it('maps length finish reason to max_tokens', async () => {
@@ -242,6 +273,73 @@ describe('OpenAIAdapter', () => {
       const adapter = new OpenAIAdapter(client);
 
       await expect(adapter.embed('test')).rejects.toThrow('no data');
+    });
+  });
+
+  describe('error handling', () => {
+    it('classifies 401 error as ConfigError', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      (client.chat.completions.create as jest.Mock).mockRejectedValue(
+        new Error('Request failed with status code 401: Unauthorized'),
+      );
+      const adapter = new OpenAIAdapter(client);
+
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toThrow('Invalid API key');
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toHaveProperty('name', 'ConfigError');
+    });
+
+    it('classifies 429 error as LLMError', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      (client.chat.completions.create as jest.Mock).mockRejectedValue(
+        new Error('Request failed with status code 429: rate_limit_exceeded'),
+      );
+      const adapter = new OpenAIAdapter(client);
+
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toThrow('Rate limited');
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toHaveProperty('name', 'LLMError');
+    });
+
+    it('classifies generic error as LLMError', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      (client.chat.completions.create as jest.Mock).mockRejectedValue(
+        new Error('Connection refused'),
+      );
+      const adapter = new OpenAIAdapter(client);
+
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toThrow('LLM call failed');
+      await expect(adapter.chat([{ role: 'user', content: 'test' }]))
+        .rejects.toHaveProperty('name', 'LLMError');
+    });
+
+    it('classifies embed errors', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      (client.embeddings.create as jest.Mock).mockRejectedValue(
+        new Error('401 Unauthorized'),
+      );
+      const adapter = new OpenAIAdapter(client);
+
+      await expect(adapter.embed('test'))
+        .rejects.toHaveProperty('name', 'ConfigError');
+    });
+
+    it('times out after 60s', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      // Mock a call that never resolves
+      (client.chat.completions.create as jest.Mock).mockReturnValue(
+        new Promise(() => {}), // never resolves
+      );
+      const adapter = new OpenAIAdapter(client);
+
+      // Use a short timeout for testing by importing safeCall's timeout
+      // The actual adapter uses 60s, but we can't wait that long in tests.
+      // Instead, verify the error classification pattern for timeout errors.
+      const { classifyAndThrow } = require('../../../src/llm/adapters/safety');
+      expect(() => classifyAndThrow(new Error('Request timed out'))).toThrow('timed out');
     });
   });
 

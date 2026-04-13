@@ -3,15 +3,17 @@
  *
  * Category A: fixture-based. Verifies date detection creates correct
  * reminder payloads for invoices, appointments, birthdays, deadlines.
+ * Tests dual-gate logic (keyword + date), multiple date formats,
+ * and expanded keyword set.
  *
  * Source: brain/tests/test_event_extractor.py
  */
 
-import { extractEvents, isValidReminderPayload, extractBirthdayDate } from '../../src/enrichment/event_extractor';
+import { extractEvents, isValidReminderPayload, extractBirthdayDate, extractTime } from '../../src/enrichment/event_extractor';
 import type { ExtractionInput } from '../../src/enrichment/event_extractor';
 
 describe('Event Extractor', () => {
-  describe('extractEvents', () => {
+  describe('extractEvents — month-day format', () => {
     it('extracts payment due date from invoice', () => {
       const input: ExtractionInput = {
         item_id: 'item-001', type: 'email', timestamp: 1700000000,
@@ -105,6 +107,213 @@ describe('Event Extractor', () => {
     });
   });
 
+  describe('extractEvents — ISO date format (YYYY-MM-DD)', () => {
+    it('extracts ISO date from deadline text', () => {
+      const input: ExtractionInput = {
+        item_id: 'iso-001', type: 'email', timestamp: 1700000000,
+        summary: 'Deadline is 2026-04-15',
+        body: 'The project deadline is 2026-04-15.',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('deadline');
+      expect(events[0].fire_at).toContain('2026-04-15');
+    });
+
+    it('extracts ISO date from appointment text', () => {
+      const input: ExtractionInput = {
+        item_id: 'iso-002', type: 'note', timestamp: 1700000000,
+        summary: 'Doctor appointment on 2026-03-20',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('2026-03-20');
+    });
+  });
+
+  describe('extractEvents — DD/MM/YYYY format', () => {
+    it('extracts DD/MM/YYYY from bill text', () => {
+      const input: ExtractionInput = {
+        item_id: 'ddmm-001', type: 'email', timestamp: 1700000000,
+        summary: 'Bill due 15/03/2026',
+        body: 'Your bill is due by 15/03/2026.',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('payment_due');
+      expect(events[0].fire_at).toContain('2026-03-15');
+    });
+
+    it('rejects invalid DD/MM/YYYY (month > 12)', () => {
+      const input: ExtractionInput = {
+        item_id: 'ddmm-002', type: 'email', timestamp: 1700000000,
+        summary: 'Payment due 15/13/2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events).toEqual([]);
+    });
+  });
+
+  describe('extractEvents — ordinal dates', () => {
+    it('extracts "27th March" (ordinal + month)', () => {
+      const input: ExtractionInput = {
+        item_id: 'ord-001', type: 'note', timestamp: 1700000000,
+        summary: 'Meeting on 27th March',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('03-27');
+    });
+
+    it('extracts "March 27th" (month + ordinal)', () => {
+      const input: ExtractionInput = {
+        item_id: 'ord-002', type: 'note', timestamp: 1700000000,
+        summary: 'Appointment on March 27th',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('03-27');
+    });
+
+    it('extracts "1st April 2026" with year', () => {
+      const input: ExtractionInput = {
+        item_id: 'ord-003', type: 'note', timestamp: 1700000000,
+        summary: 'Deadline is 1st April 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('2026-04-01');
+    });
+
+    it('extracts "December 3rd" (month + ordinal, no year)', () => {
+      const input: ExtractionInput = {
+        item_id: 'ord-004', type: 'note', timestamp: 1700000000,
+        summary: 'Call scheduled December 3rd',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('12-03');
+    });
+  });
+
+  describe('dual-gate logic', () => {
+    it('date without keyword → empty (no reminder)', () => {
+      const input: ExtractionInput = {
+        item_id: 'gate-001', type: 'note', timestamp: 1700000000,
+        summary: 'Something happened on March 15',
+        body: 'The weather was nice on March 15.',
+      };
+      const events = extractEvents(input);
+      expect(events).toEqual([]);
+    });
+
+    it('keyword without date → empty (no reminder)', () => {
+      const input: ExtractionInput = {
+        item_id: 'gate-002', type: 'note', timestamp: 1700000000,
+        summary: 'Schedule a meeting soon',
+        body: 'We need to have a meeting about the project.',
+      };
+      const events = extractEvents(input);
+      expect(events).toEqual([]);
+    });
+
+    it('keyword + date → creates reminder', () => {
+      const input: ExtractionInput = {
+        item_id: 'gate-003', type: 'note', timestamp: 1700000000,
+        summary: 'Meeting on March 15',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('appointment');
+    });
+  });
+
+  describe('expanded keywords', () => {
+    it('"consultation" → appointment', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-001', type: 'note', timestamp: 1700000000,
+        summary: 'Consultation with specialist on March 10, 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('appointment');
+    });
+
+    it('"vaccination" → appointment', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-002', type: 'note', timestamp: 1700000000,
+        summary: 'Vaccination scheduled for April 5, 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('appointment');
+    });
+
+    it('"bill" → payment_due', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-003', type: 'email', timestamp: 1700000000,
+        summary: 'Electricity bill due March 20, 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('payment_due');
+    });
+
+    it('"anniversary" → birthday kind', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-004', type: 'note', timestamp: 1700000000,
+        summary: 'Wedding anniversary June 10',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('birthday');
+    });
+
+    it('"bday" → birthday kind', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-005', type: 'note', timestamp: 1700000000,
+        summary: "Tom's bday is July 4",
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('birthday');
+    });
+
+    it('"overdue" → payment_due', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-006', type: 'email', timestamp: 1700000000,
+        summary: 'Account overdue since January 15, 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('payment_due');
+    });
+
+    it('"check-up" → appointment', () => {
+      const input: ExtractionInput = {
+        item_id: 'kw-007', type: 'note', timestamp: 1700000000,
+        summary: 'Annual check-up on February 28, 2026',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].kind).toBe('appointment');
+    });
+  });
+
   describe('isValidReminderPayload', () => {
     it('validates a complete reminder payload', () => {
       expect(isValidReminderPayload({
@@ -164,6 +373,64 @@ describe('Event Extractor', () => {
       const result = extractBirthdayDate("Birthday is Dec 25");
       expect(result).not.toBeNull();
       expect(result).toContain('12-25');
+    });
+
+    it('handles ordinal date "birthday on 25th December"', () => {
+      const result = extractBirthdayDate("Birthday on 25th December");
+      expect(result).not.toBeNull();
+      expect(result).toContain('12-25');
+    });
+  });
+
+  describe('extractTime (wired TIME_PATTERN)', () => {
+    it('"at 2pm" → { hour: 14, minute: 0 }', () => {
+      expect(extractTime('Meeting at 2pm')).toEqual({ hour: 14, minute: 0 });
+    });
+
+    it('"at 2:00 PM" → { hour: 14, minute: 0 }', () => {
+      expect(extractTime('Dentist at 2:00 PM')).toEqual({ hour: 14, minute: 0 });
+    });
+
+    it('"at 14:00" → { hour: 14, minute: 0 }', () => {
+      expect(extractTime('Call at 14:00')).toEqual({ hour: 14, minute: 0 });
+    });
+
+    it('"at 3:30pm" → { hour: 15, minute: 30 }', () => {
+      expect(extractTime('Appointment at 3:30pm')).toEqual({ hour: 15, minute: 30 });
+    });
+
+    it('"at 9am" → { hour: 9, minute: 0 }', () => {
+      expect(extractTime('Breakfast at 9am')).toEqual({ hour: 9, minute: 0 });
+    });
+
+    it('"at 12pm" → { hour: 12, minute: 0 } (noon)', () => {
+      expect(extractTime('Lunch at 12pm')).toEqual({ hour: 12, minute: 0 });
+    });
+
+    it('returns null when no time found', () => {
+      expect(extractTime('Meeting tomorrow')).toBeNull();
+    });
+
+    it('extracted time appears in event fire_at', () => {
+      const input: ExtractionInput = {
+        item_id: 'time-001', type: 'note', timestamp: 1700000000,
+        summary: 'Dentist appointment March 20 at 2pm',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('T14:00:00Z');
+    });
+
+    it('defaults to 09:00 when no time in text', () => {
+      const input: ExtractionInput = {
+        item_id: 'time-002', type: 'note', timestamp: 1700000000,
+        summary: 'Meeting on March 20',
+        body: '',
+      };
+      const events = extractEvents(input);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0].fire_at).toContain('T09:00:00Z');
     });
   });
 });

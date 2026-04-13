@@ -111,8 +111,8 @@ describe('D2D End-to-End Integration', () => {
 
       const payload = sealMessage(msg, alicePriv, bobPub);
 
-      // Bob receives — Alice is unknown → quarantined
-      const result = receiveD2D(payload, bobPub, bobPriv, [alicePub], 'unknown');
+      // Bob receives — Alice is a stranger (empty trust = not a contact) → quarantined
+      const result = receiveD2D(payload, bobPub, bobPriv, [alicePub], '');
       expect(result.action).toBe('quarantined');
       expect(quarantineSize()).toBe(1);
 

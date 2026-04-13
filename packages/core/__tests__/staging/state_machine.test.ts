@@ -67,9 +67,9 @@ describe('Staging State Machine', () => {
       expect(validTransitionsFrom('received')).toEqual(['classifying']);
     });
 
-    it('classifying → 4 options', () => {
+    it('classifying → 5 options (including pending_approval)', () => {
       const targets = validTransitionsFrom('classifying').sort();
-      expect(targets).toEqual(['failed', 'pending_unlock', 'received', 'stored']);
+      expect(targets).toEqual(['failed', 'pending_approval', 'pending_unlock', 'received', 'stored']);
     });
 
     it('stored → [] (terminal)', () => {

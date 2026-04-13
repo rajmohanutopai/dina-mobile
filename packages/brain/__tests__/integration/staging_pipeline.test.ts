@@ -35,7 +35,7 @@ describe('Staging Pipeline End-to-End Integration', () => {
   });
 
   describe('happy path: email → vault', () => {
-    it('complete flow: ingest → claim → classify → enrich → resolve', async () => {
+    it('complete flow: ingest → claim → classify → enrich → resolve → vault', async () => {
       // 1. Dedup check
       expect(isDuplicate('gmail', 'msg-001')).toBe(false);
       markSeen('gmail', 'msg-001');
@@ -65,9 +65,29 @@ describe('Staging Pipeline End-to-End Integration', () => {
       const enriched = await enrichItem(claimed[0].data as Record<string, unknown>);
       expect(enriched.content_l0).toBeTruthy();
 
-      // 7. Resolve to open persona
-      resolve(id, 'general', true);
+      // 7. Resolve to open persona — pass enriched data for vault storage
+      const vaultItem = {
+        ...claimed[0].data as Record<string, unknown>,
+        content_l0: enriched.content_l0,
+        content_l1: enriched.content_l1 || '',
+        enrichment_status: enriched.enrichment_status,
+        enrichment_version: typeof enriched.enrichment_version === 'string'
+          ? enriched.enrichment_version
+          : JSON.stringify(enriched.enrichment_version),
+        confidence: enriched.confidence,
+        sender_trust: scored.sender_trust,
+      };
+      resolve(id, 'general', true, vaultItem);
       expect(getItem(id)!.status).toBe('stored');
+
+      // 8. Verify item reached the vault with enriched fields
+      const vaultResults = queryVault('general', { mode: 'fts5', text: 'meeting', limit: 10 });
+      expect(vaultResults.length).toBeGreaterThanOrEqual(1);
+
+      const stored = vaultResults[0];
+      expect(stored.content_l0).toBeTruthy();
+      expect(stored.enrichment_status).toBe('l0_complete');
+      expect(stored.confidence).toMatch(/^(high|medium|low)$/);
     });
   });
 
@@ -93,6 +113,39 @@ describe('Staging Pipeline End-to-End Integration', () => {
       const drained = drainForPersona('health');
       expect(drained).toBe(1);
       expect(getItem(id)!.status).toBe('stored');
+    });
+
+    it('drained item with enriched data reaches vault with content_l0', async () => {
+      // Enrich the item before resolving to locked persona
+      const { id } = ingest({
+        source: 'gmail', source_id: 'health-enriched',
+        data: { summary: 'Blood pressure reading 120/80', sender: 'doctor@hospital.com' },
+      });
+      claim(10);
+
+      // Enrich
+      const enriched = await enrichItem({ type: 'email', sender: 'doctor@hospital.com', timestamp: Date.now(), summary: 'Blood pressure reading 120/80' });
+
+      // Resolve to locked health persona WITH enriched data
+      const vaultItem = {
+        summary: 'Blood pressure reading 120/80',
+        content_l0: enriched.content_l0,
+        enrichment_status: enriched.enrichment_status,
+        confidence: enriched.confidence,
+      };
+      resolve(id, 'health', false, vaultItem); // health is locked
+      expect(getItem(id)!.status).toBe('pending_unlock');
+
+      // Unlock and drain
+      openPersona('health', true);
+      const { drainForPersona } = require('../../../core/src/staging/service');
+      drainForPersona('health');
+
+      // Verify vault item has enriched content
+      const vaultResults = queryVault('health', { mode: 'fts5', text: 'blood', limit: 10 });
+      expect(vaultResults.length).toBeGreaterThanOrEqual(1);
+      expect(vaultResults[0].content_l0).toBeTruthy();
+      expect(vaultResults[0].enrichment_status).toBe('l0_complete');
     });
   });
 
@@ -131,16 +184,16 @@ describe('Staging Pipeline End-to-End Integration', () => {
 
       expect(hasEventSignals(itemData.summary, itemData.body)).toBe(true);
 
-      const result = handlePostPublish(itemData);
+      const result = await handlePostPublish(itemData);
       // Reminders may or may not be created depending on date parsing
       expect(result.errors).toHaveLength(0);
     });
   });
 
   describe('contact integration', () => {
-    it('post-publish updates known contact interaction', () => {
+    it('post-publish updates known contact interaction', async () => {
       addContact('did:plc:alice', 'Alice');
-      const result = handlePostPublish({
+      const result = await handlePostPublish({
         id: 'item-from-alice',
         type: 'email',
         summary: 'Hello from Alice',

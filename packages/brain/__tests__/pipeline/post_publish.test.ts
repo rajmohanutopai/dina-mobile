@@ -17,8 +17,8 @@ describe('Post-Publish Handler', () => {
   });
 
   describe('reminder extraction', () => {
-    it('creates reminder from birthday mention', () => {
-      const result = handlePostPublish({
+    it('creates reminder from birthday mention', async () => {
+      const result = await handlePostPublish({
         id: 'item-001',
         type: 'email',
         summary: 'Emma birthday March 15',
@@ -30,8 +30,8 @@ describe('Post-Publish Handler', () => {
       // Note: whether a reminder is created depends on event_extractor finding a valid date
     });
 
-    it('does not crash on items without events', () => {
-      const result = handlePostPublish({
+    it('does not crash on items without events', async () => {
+      const result = await handlePostPublish({
         id: 'item-002',
         type: 'email',
         summary: 'Weekly team update',
@@ -42,9 +42,9 @@ describe('Post-Publish Handler', () => {
       expect(result.errors).toHaveLength(0);
     });
 
-    it('reminder is stored in the correct persona', () => {
+    it('reminder is stored in the correct persona', async () => {
       // Create an item with a deadline that event_extractor can detect
-      handlePostPublish({
+      await handlePostPublish({
         id: 'item-003',
         type: 'invoice',
         summary: 'Invoice due January 15',
@@ -61,11 +61,11 @@ describe('Post-Publish Handler', () => {
   });
 
   describe('contact update', () => {
-    it('updates last_interaction for known sender', () => {
+    it('updates last_interaction for known sender', async () => {
       addContact('did:plc:alice', 'Alice');
       const beforeUpdate = getContact('did:plc:alice')!.updatedAt;
 
-      handlePostPublish({
+      await handlePostPublish({
         id: 'item-010',
         type: 'email',
         summary: 'Hello from Alice',
@@ -79,9 +79,9 @@ describe('Post-Publish Handler', () => {
       expect(afterUpdate).toBeGreaterThanOrEqual(beforeUpdate);
     });
 
-    it('returns contactUpdated: true for known sender', () => {
+    it('returns contactUpdated: true for known sender', async () => {
       addContact('did:plc:bob', 'Bob');
-      const result = handlePostPublish({
+      const result = await handlePostPublish({
         id: 'item-011',
         type: 'email',
         summary: 'Message from Bob',
@@ -93,8 +93,8 @@ describe('Post-Publish Handler', () => {
       expect(result.contactUpdated).toBe(true);
     });
 
-    it('returns contactUpdated: false for unknown sender', () => {
-      const result = handlePostPublish({
+    it('returns contactUpdated: false for unknown sender', async () => {
+      const result = await handlePostPublish({
         id: 'item-012',
         type: 'email',
         summary: 'Spam',
@@ -106,8 +106,8 @@ describe('Post-Publish Handler', () => {
       expect(result.contactUpdated).toBe(false);
     });
 
-    it('skips contact update when no sender_did', () => {
-      const result = handlePostPublish({
+    it('skips contact update when no sender_did', async () => {
+      const result = await handlePostPublish({
         id: 'item-013',
         type: 'note',
         summary: 'Personal note',
@@ -120,8 +120,8 @@ describe('Post-Publish Handler', () => {
   });
 
   describe('ambiguous routing detection', () => {
-    it('flags low confidence (< 0.5) as ambiguous', () => {
-      const result = handlePostPublish({
+    it('flags low confidence (< 0.5) as ambiguous', async () => {
+      const result = await handlePostPublish({
         id: 'item-020',
         type: 'email',
         summary: 'Ambiguous content',
@@ -133,8 +133,8 @@ describe('Post-Publish Handler', () => {
       expect(result.ambiguousRouting).toBe(true);
     });
 
-    it('does NOT flag high confidence as ambiguous', () => {
-      const result = handlePostPublish({
+    it('does NOT flag high confidence as ambiguous', async () => {
+      const result = await handlePostPublish({
         id: 'item-021',
         type: 'email',
         summary: 'Clearly medical',
@@ -146,8 +146,8 @@ describe('Post-Publish Handler', () => {
       expect(result.ambiguousRouting).toBe(false);
     });
 
-    it('does NOT flag when confidence is not provided', () => {
-      const result = handlePostPublish({
+    it('does NOT flag when confidence is not provided', async () => {
+      const result = await handlePostPublish({
         id: 'item-022',
         type: 'email',
         summary: 'No confidence',
@@ -160,9 +160,9 @@ describe('Post-Publish Handler', () => {
   });
 
   describe('error resilience', () => {
-    it('never throws — catches all internal errors', () => {
+    it('never throws — catches all internal errors', async () => {
       // Even with bad data, should not throw
-      const result = handlePostPublish({
+      const result = await handlePostPublish({
         id: '',
         type: '',
         summary: '',

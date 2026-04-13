@@ -1,4 +1,4 @@
-export { generateMnemonic, mnemonicToSeed, validateMnemonic } from './bip39';
+export { generateMnemonic, mnemonicToSeed, mnemonicToEntropy, validateMnemonic } from './bip39';
 export { derivePath, derivePathSecp256k1, deriveRootSigningKey, derivePersonaSigningKey, deriveRotationKey } from './slip0010';
 export type { DerivedKey } from './slip0010';
 export { derivePersonaDEK, deriveBackupKey, deriveDEKHash } from './hkdf';

@@ -9,7 +9,7 @@ import {
   setRetryDeliveryFn, resetRetryState,
 } from '../../src/transport/retry';
 import {
-  enqueueMessage, markFailed, clearOutbox, outboxSize,
+  enqueueMessage, markFailed, markDelivered, clearOutbox, outboxSize,
   getPendingForRetry,
 } from '../../src/transport/outbox';
 
@@ -27,7 +27,7 @@ describe('Outbox Retry Orchestrator', () => {
       expect(result.attempted).toBe(1);
       expect(result.delivered).toBe(1);
       expect(result.failed).toBe(0);
-      expect(outboxSize()).toBe(0); // delivered → removed
+      expect(outboxSize()).toBe(1); // delivered → kept for audit (matching Go)
     });
 
     it('marks failed on delivery failure', async () => {
@@ -65,8 +65,9 @@ describe('Outbox Retry Orchestrator', () => {
       expect(result.delivered).toBe(0);
     });
 
-    it('sweeps expired messages', async () => {
+    it('sweeps expired delivered/failed messages', async () => {
       const id = enqueueMessage('did:plc:old', new Uint8Array(0));
+      markDelivered(id); // must be delivered/failed for deleteExpired
       // Expire: now + 25 hours (outbox TTL is 24h)
       const farFuture = Date.now() + 25 * 60 * 60 * 1000;
       const result = await retryPendingOutbox(farFuture);

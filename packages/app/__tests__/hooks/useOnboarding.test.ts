@@ -143,7 +143,7 @@ describe('Onboarding — Create Identity (4.2)', () => {
       const { wrappedSeed } = await completeCreateIdentity(words, 'TestPass1!');
 
       const seed = await unwrapSeed('TestPass1!', wrappedSeed);
-      expect(seed).toHaveLength(64); // BIP-39 seed is 64 bytes
+      expect(seed).toHaveLength(32); // 32-byte entropy (matching Go's mnemonicToEntropy)
     });
 
     it('rejects invalid mnemonic', async () => {

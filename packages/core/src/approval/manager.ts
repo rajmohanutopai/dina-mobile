@@ -128,3 +128,26 @@ export class ApprovalManager {
     return count;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Singleton — shared across HTTP routes, UI hooks, and Brain event processor.
+//
+// Previously, approvals.ts and useChatApprovals.ts each created their own
+// ApprovalManager instance, so approvals created via HTTP were invisible to
+// the UI and vice versa. This singleton fixes that bug (GAP_ANALYSIS §A48).
+// ---------------------------------------------------------------------------
+
+let _instance: ApprovalManager | null = null;
+
+/** Get the shared ApprovalManager singleton. */
+export function getApprovalManager(): ApprovalManager {
+  if (!_instance) {
+    _instance = new ApprovalManager();
+  }
+  return _instance;
+}
+
+/** Reset the singleton (for testing only). */
+export function resetApprovalManager(): void {
+  _instance = new ApprovalManager();
+}

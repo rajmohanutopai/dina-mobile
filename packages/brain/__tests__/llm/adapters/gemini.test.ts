@@ -170,6 +170,41 @@ describe('GeminiAdapter', () => {
       expect(getModel.mock.calls[0][0].model).toBe('gemini-2.5-pro');
     });
 
+    it('passes responseSchema in generationConfig', async () => {
+      const model = createMockModel(TEXT_RESULT);
+      const client = createMockClient(model);
+      const adapter = new GeminiAdapter(client);
+
+      const schema = {
+        type: 'object',
+        properties: { persona: { type: 'string' }, confidence: { type: 'number' } },
+        required: ['persona', 'confidence'],
+      };
+
+      await adapter.chat(
+        [{ role: 'user', content: 'Classify this' }],
+        { responseSchema: schema },
+      );
+
+      const genContent = model.generateContent as jest.Mock;
+      const config = genContent.mock.calls[0][0].generationConfig;
+      expect(config.responseMimeType).toBe('application/json');
+      expect(config.responseSchema).toEqual(schema);
+    });
+
+    it('does NOT set responseMimeType when no schema provided', async () => {
+      const model = createMockModel(TEXT_RESULT);
+      const client = createMockClient(model);
+      const adapter = new GeminiAdapter(client);
+
+      await adapter.chat([{ role: 'user', content: 'Hello' }]);
+
+      const genContent = model.generateContent as jest.Mock;
+      const config = genContent.mock.calls[0][0].generationConfig;
+      expect(config.responseMimeType).toBeUndefined();
+      expect(config.responseSchema).toBeUndefined();
+    });
+
     it('maps MAX_TOKENS finish reason', async () => {
       const result: GeminiResult = {
         response: {

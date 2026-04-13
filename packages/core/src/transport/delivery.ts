@@ -10,6 +10,11 @@
  * Source: core/test/transport_test.go
  */
 
+import { isPublicURL } from './ssrf';
+import { buildForwardHeaders } from '../relay/msgbox_forward';
+import { getPublicKey } from '../crypto/ed25519';
+import { bytesToHex } from '@noble/hashes/utils.js';
+
 export type ServiceType = 'DinaMsgBox' | 'DinaDirectHTTPS';
 
 export interface DeliveryResult {
@@ -18,6 +23,19 @@ export interface DeliveryResult {
   messageId?: string;
   error?: string;
 }
+
+/** Sender identity for building MsgBox /forward auth headers. */
+export interface SenderIdentity {
+  did: string;
+  privateKey: Uint8Array;
+}
+
+/** Injectable WS delivery function — tries WebSocket before HTTP /forward. */
+export type WSDeliverFn = (
+  recipientDID: string,
+  recipientPub: Uint8Array,
+  payload: Record<string, unknown>,
+) => boolean;
 
 interface CachedResolution {
   type: ServiceType;
@@ -38,6 +56,9 @@ let didResolver: ((did: string) => Promise<{ type: ServiceType; endpoint: string
 
 /** Injectable spool drain handler (for testing/integration). */
 let spoolDrainHandler: (() => Promise<number>) | null = null;
+
+/** Injectable WS delivery (for WS-first send path). */
+let wsDeliverFn: WSDeliverFn | null = null;
 
 /** Clear the DID resolution cache (for testing). */
 export function clearDIDCache(): void {
@@ -64,11 +85,17 @@ export function setSpoolDrainHandler(handler: () => Promise<number>): void {
   spoolDrainHandler = handler;
 }
 
+/** Set the WS delivery function (called by runtime startup to enable WS-first delivery). */
+export function setWSDeliverFn(fn: WSDeliverFn | null): void {
+  wsDeliverFn = fn;
+}
+
 /** Reset all injectable dependencies (for testing). */
 export function resetDeliveryDeps(): void {
   fetchFn = globalThis.fetch;
   didResolver = null;
   spoolDrainHandler = null;
+  wsDeliverFn = null;
 }
 
 /**
@@ -127,22 +154,47 @@ export function lookupDIDCache(did: string, now?: number): { type: ServiceType; 
 /**
  * Deliver a sealed D2D payload to a recipient via their DID service type.
  *
- * DinaMsgBox: convert wss:// → https:///forward, POST with binary body.
+ * DinaMsgBox: POST to /forward with all 6 required auth headers.
  *   MsgBox returns {"status":"delivered"} or {"status":"buffered"}.
  * DinaDirectHTTPS: POST to the endpoint's /msg path with binary body.
+ *
+ * @param senderIdentity — required for DinaMsgBox to build /forward auth headers.
+ *   Without it, falls back to unsigned POST (for backward compat with existing tests).
  */
 export async function deliverMessage(
   recipientDID: string,
   payload: Uint8Array,
   serviceType: ServiceType,
   endpoint: string,
+  senderIdentity?: SenderIdentity,
 ): Promise<DeliveryResult> {
+  // SSRF protection: block delivery to private/reserved IPs
+  if (!isPublicURL(endpoint)) {
+    return {
+      delivered: false,
+      buffered: false,
+      error: `SSRF blocked: endpoint "${endpoint}" resolves to a private or reserved address`,
+    };
+  }
+
   try {
     if (serviceType === 'DinaMsgBox') {
       const forwardURL = msgboxWSToForwardURL(endpoint);
+
+      // Build request headers: include auth headers when sender identity is available
+      const reqHeaders: Record<string, string> = { 'Content-Type': 'application/octet-stream' };
+      if (senderIdentity) {
+        const pubHex = bytesToHex(getPublicKey(senderIdentity.privateKey));
+        const authHeaders = buildForwardHeaders(
+          recipientDID, senderIdentity.did, pubHex,
+          senderIdentity.privateKey, payload,
+        );
+        Object.assign(reqHeaders, authHeaders);
+      }
+
       const response = await fetchFn(forwardURL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        headers: reqHeaders,
         body: payload,
       });
 

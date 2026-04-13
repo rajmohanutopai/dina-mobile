@@ -146,12 +146,28 @@ describe('Persona HTTP Endpoints', () => {
   });
 
   describe('POST /v1/persona/lock', () => {
-    it('locks an open persona', async () => {
+    it('locks an open sensitive persona', async () => {
+      await signedPost(app, '/v1/personas', { name: 'health', tier: 'sensitive' });
+      await signedPost(app, '/v1/persona/unlock', { name: 'health', approved: true });
+      const res = await signedPost(app, '/v1/persona/lock', { name: 'health' });
+      expect(res.status).toBe(200);
+      expect(res.body.locked).toBe(true);
+    });
+
+    it('rejects locking default tier persona', async () => {
+      await signedPost(app, '/v1/personas', { name: 'general', tier: 'default' });
+      await signedPost(app, '/v1/persona/unlock', { name: 'general' });
+      const res = await signedPost(app, '/v1/persona/lock', { name: 'general' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('auto-open on boot');
+    });
+
+    it('rejects locking standard tier persona', async () => {
       await signedPost(app, '/v1/personas', { name: 'work', tier: 'standard' });
       await signedPost(app, '/v1/persona/unlock', { name: 'work' });
       const res = await signedPost(app, '/v1/persona/lock', { name: 'work' });
-      expect(res.status).toBe(200);
-      expect(res.body.locked).toBe(true);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('auto-open on boot');
     });
 
     it('returns 404 for nonexistent persona', async () => {
@@ -165,20 +181,20 @@ describe('Persona HTTP Endpoints', () => {
     });
 
     it('lock then unlock verifies state change', async () => {
-      await signedPost(app, '/v1/personas', { name: 'work', tier: 'standard' });
-      await signedPost(app, '/v1/persona/unlock', { name: 'work' });
+      await signedPost(app, '/v1/personas', { name: 'health', tier: 'sensitive' });
+      await signedPost(app, '/v1/persona/unlock', { name: 'health', approved: true });
 
       // Verify it's open
       let list = await signedGet(app, '/v1/personas');
-      const open = list.body.personas.find((p: any) => p.name === 'work');
+      const open = list.body.personas.find((p: any) => p.name === 'health');
       expect(open.isOpen).toBe(true);
 
       // Lock it
-      await signedPost(app, '/v1/persona/lock', { name: 'work' });
+      await signedPost(app, '/v1/persona/lock', { name: 'health' });
 
       // Verify it's closed
       list = await signedGet(app, '/v1/personas');
-      const closed = list.body.personas.find((p: any) => p.name === 'work');
+      const closed = list.body.personas.find((p: any) => p.name === 'health');
       expect(closed.isOpen).toBe(false);
     });
   });

@@ -5,12 +5,16 @@
  * alone when LLM is unavailable.
  *
  * Pattern: "{Type} from {sender} on {date}"
+ * Self-authored: "{Type} on {date}" (sender excluded, matching Python)
  * Caveats appended for low-trust or marketing content.
  *
  * Source: brain/tests/test_enrichment.py
  */
 
-import { generateL0, addTrustCaveat, formatTimestamp } from '../../src/enrichment/l0_deterministic';
+import {
+  generateL0, generateL0WithMeta, addTrustCaveat, formatTimestamp,
+  buildEnrichmentVersion,
+} from '../../src/enrichment/l0_deterministic';
 import type { L0Input } from '../../src/enrichment/l0_deterministic';
 
 describe('L0 Deterministic Generation', () => {
@@ -37,24 +41,54 @@ describe('L0 Deterministic Generation', () => {
       expect(generateL0(input)).toBe('Meeting reminder for Thursday');
     });
 
-    it('handles empty sender gracefully', () => {
+    it('excludes sender when sender is "user" (self-authored)', () => {
+      const input: L0Input = {
+        type: 'note',
+        source: 'personal',
+        sender: 'user',
+        timestamp: 1700000000,
+      };
+      expect(generateL0(input)).toBe('Note on 2023-11-14');
+    });
+
+    it('excludes sender when sender is "self"', () => {
+      const input: L0Input = {
+        type: 'note',
+        source: 'personal',
+        sender: 'self',
+        timestamp: 1700000000,
+      };
+      expect(generateL0(input)).toBe('Note on 2023-11-14');
+    });
+
+    it('excludes sender when sender is "me"', () => {
+      const input: L0Input = {
+        type: 'note',
+        source: 'personal',
+        sender: 'Me',
+        timestamp: 1700000000,
+      };
+      expect(generateL0(input)).toBe('Note on 2023-11-14');
+    });
+
+    it('handles empty sender gracefully (excluded like self)', () => {
       const input: L0Input = {
         type: 'email',
         source: 'gmail',
         sender: '',
         timestamp: 1700000000,
       };
-      expect(generateL0(input)).toBe('Email from unknown sender on 2023-11-14');
+      expect(generateL0(input)).toBe('Email on 2023-11-14');
     });
 
     it('handles zero timestamp', () => {
       const input: L0Input = {
         type: 'note',
         source: 'personal',
-        sender: 'user',
+        sender: 'alice@example.com',
         timestamp: 0,
       };
-      expect(generateL0(input)).toBe('Note from user on unknown date');
+      expect(generateL0(input)).toBe('Note from alice@example.com on unknown date');
     });
 
     it('capitalizes type', () => {
@@ -132,6 +166,80 @@ describe('L0 Deterministic Generation', () => {
       };
       const l0 = generateL0(input);
       expect(l0).toBe('Special offer inside (promotional)');
+    });
+  });
+
+  describe('generateL0WithMeta', () => {
+    it('returns text, confidence, and enrichment_version', () => {
+      const result = generateL0WithMeta({
+        type: 'email', source: 'gmail', sender: 'alice@example.com',
+        timestamp: 1700000000,
+      });
+
+      expect(result.text).toBe('Email from alice@example.com on 2023-11-14');
+      expect(result.confidence).toBe('medium');
+      expect(result.enrichment_version.prompt_v).toBe('deterministic-v1');
+      expect(result.enrichment_version.embed_model).toBeNull();
+      expect(result.enrichment_version.timestamp).toBeGreaterThan(0);
+    });
+
+    it('confidence is high when summary provided', () => {
+      const result = generateL0WithMeta({
+        type: 'note', source: 'personal', sender: 'user',
+        timestamp: 1700000000, summary: 'My custom title',
+      });
+      expect(result.confidence).toBe('high');
+    });
+
+    it('confidence is high for self sender_trust', () => {
+      const result = generateL0WithMeta({
+        type: 'note', source: 'personal', sender: 'user',
+        timestamp: 1700000000, sender_trust: 'self',
+      });
+      expect(result.confidence).toBe('high');
+    });
+
+    it('confidence is medium for contact_ring1', () => {
+      const result = generateL0WithMeta({
+        type: 'email', source: 'gmail', sender: 'alice@example.com',
+        timestamp: 1700000000, sender_trust: 'contact_ring1',
+      });
+      expect(result.confidence).toBe('medium');
+    });
+
+    it('confidence is low for unknown sender_trust', () => {
+      const result = generateL0WithMeta({
+        type: 'email', source: 'gmail', sender: 'stranger@x.com',
+        timestamp: 1700000000, sender_trust: 'unknown',
+      });
+      expect(result.confidence).toBe('low');
+    });
+
+    it('confidence is low for marketing sender_trust', () => {
+      const result = generateL0WithMeta({
+        type: 'email', source: 'gmail', sender: 'promo@news.com',
+        timestamp: 1700000000, sender_trust: 'marketing',
+      });
+      expect(result.confidence).toBe('low');
+    });
+
+    it('explicit confidence field overrides derivation', () => {
+      const result = generateL0WithMeta({
+        type: 'email', source: 'gmail', sender: 'user',
+        timestamp: 1700000000, sender_trust: 'self',
+        confidence: 'low', // explicit override
+      });
+      expect(result.confidence).toBe('low');
+    });
+  });
+
+  describe('buildEnrichmentVersion', () => {
+    it('returns structured version with prompt_v and timestamp', () => {
+      const version = buildEnrichmentVersion();
+      expect(version.prompt_v).toBe('deterministic-v1');
+      expect(version.embed_model).toBeNull();
+      expect(typeof version.timestamp).toBe('number');
+      expect(version.timestamp).toBeGreaterThan(0);
     });
   });
 

@@ -81,7 +81,7 @@ export async function processEvent(event: ProcessEvent): Promise<ProcessResult> 
 
     case 'post_publish': {
       const item = event.payload;
-      const result = handlePostPublish({
+      const result = await handlePostPublish({
         id: String(item.id ?? ''),
         type: String(item.type ?? ''),
         summary: String(item.summary ?? ''),

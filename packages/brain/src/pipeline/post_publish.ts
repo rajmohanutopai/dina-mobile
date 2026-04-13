@@ -12,15 +12,16 @@
  * Source: ARCHITECTURE.md Task 3.29
  */
 
-import { extractEvents, isValidReminderPayload } from '../enrichment/event_extractor';
-import type { ExtractedEvent, ExtractionInput } from '../enrichment/event_extractor';
-import { createReminder } from '../../../core/src/reminders/service';
+import { planReminders } from './reminder_planner';
 import { getContact, updateContact } from '../../../core/src/contacts/directory';
+import { extractIdentityLinks, type IdentityLink } from './identity_extraction';
 
 export interface PostPublishResult {
   remindersCreated: number;
   contactUpdated: boolean;
   ambiguousRouting: boolean;
+  identityLinksFound: number;
+  llmRefinedReminders: boolean;
   errors: string[];
 }
 
@@ -29,7 +30,7 @@ export interface PostPublishResult {
  *
  * Safe: catches all errors internally. Returns a result summary.
  */
-export function handlePostPublish(item: {
+export async function handlePostPublish(item: {
   id: string;
   type: string;
   summary: string;
@@ -39,46 +40,31 @@ export function handlePostPublish(item: {
   sender_did?: string;
   confidence?: number;
   metadata?: Record<string, unknown>;
-}): PostPublishResult {
+}): Promise<PostPublishResult> {
   const result: PostPublishResult = {
     remindersCreated: 0,
     contactUpdated: false,
     ambiguousRouting: false,
+    identityLinksFound: 0,
+    llmRefinedReminders: false,
     errors: [],
   };
 
-  // 1. Extract events and create reminders
+  // 1. Plan reminders via the full reminder planner (deterministic + optional LLM)
   try {
-    const input: ExtractionInput = {
-      item_id: item.id,
+    const planResult = await planReminders({
+      itemId: item.id,
       type: item.type,
       summary: item.summary,
       body: item.body,
       timestamp: item.timestamp,
+      persona: item.persona,
       metadata: item.metadata,
-    };
-
-    const events = extractEvents(input);
-
-    for (const event of events) {
-      if (isValidReminderPayload(event)) {
-        try {
-          createReminder({
-            message: event.message,
-            due_at: new Date(event.fire_at).getTime(),
-            persona: item.persona,
-            kind: event.kind,
-            source_item_id: event.source_item_id,
-            source: 'post_publish',
-          });
-          result.remindersCreated++;
-        } catch (err) {
-          result.errors.push(`reminder: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
+    });
+    result.remindersCreated = planResult.remindersCreated;
+    result.llmRefinedReminders = planResult.llmRefined;
   } catch (err) {
-    result.errors.push(`events: ${err instanceof Error ? err.message : String(err)}`);
+    result.errors.push(`reminders: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // 2. Update contact last_interaction
@@ -97,6 +83,17 @@ export function handlePostPublish(item: {
   // 3. Flag ambiguous routing (low confidence classification)
   if (item.confidence !== undefined && item.confidence < 0.5) {
     result.ambiguousRouting = true;
+  }
+
+  // 4. Extract identity/relationship links from text content
+  try {
+    const text = `${item.summary} ${item.body}`.trim();
+    if (text.length > 0) {
+      const extraction = await extractIdentityLinks(text);
+      result.identityLinksFound = extraction.links.length;
+    }
+  } catch (err) {
+    result.errors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return result;

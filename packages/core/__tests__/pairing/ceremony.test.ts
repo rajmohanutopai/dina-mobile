@@ -14,6 +14,7 @@ import {
   purgeExpiredCodes,
   clearPairingState,
   setNodeDID,
+  verifyPairingIdentityBinding,
 } from '../../src/pairing/ceremony';
 import { getPublicKey } from '../../src/crypto/ed25519';
 import { publicKeyToMultibase } from '../../src/identity/did';
@@ -152,6 +153,62 @@ describe('Device Pairing Ceremony', () => {
     });
   });
 
+  describe('brute-force protection', () => {
+    it('wrong codes do not affect valid codes', () => {
+      const { code } = generatePairingCode();
+      expect(isCodeValid(code)).toBe(true);
+
+      // Attempts with non-existent codes don't burn valid ones
+      expect(() => completePairing('000001', 'X', testMultibase1)).toThrow();
+      expect(() => completePairing('000002', 'X', testMultibase1)).toThrow();
+      expect(() => completePairing('000003', 'X', testMultibase1)).toThrow();
+
+      // Valid code still works
+      expect(isCodeValid(code)).toBe(true);
+      const result = completePairing(code, 'Phone', testMultibase1);
+      expect(result.deviceId).toBeTruthy();
+    });
+
+    it('used code records failed attempts on subsequent tries', () => {
+      const { code } = generatePairingCode();
+      completePairing(code, 'P', testMultibase1); // succeeds, marks used
+
+      // Further attempts on the same (used) code track failures
+      expect(() => completePairing(code, 'P2', testMultibase2)).toThrow();
+      expect(() => completePairing(code, 'P3', testMultibase3)).toThrow();
+
+      // Code is already used — isCodeValid returns false
+      expect(isCodeValid(code)).toBe(false);
+    });
+
+    it('activePairingCount excludes used codes', () => {
+      generatePairingCode();
+      const { code: c2 } = generatePairingCode();
+      expect(activePairingCount()).toBe(2);
+
+      completePairing(c2, 'P', testMultibase1);
+      expect(activePairingCount()).toBe(1);
+    });
+  });
+
+  describe('collision retry', () => {
+    it('generates unique code even if internal collision occurs', () => {
+      // Generate many codes — collision retry should handle duplicates
+      const codes = new Set<string>();
+      for (let i = 0; i < 20; i++) {
+        try {
+          const { code } = generatePairingCode();
+          codes.add(code);
+        } catch {
+          // Max pending or collision exhaustion — acceptable
+          break;
+        }
+      }
+      // All generated codes should be unique
+      expect(codes.size).toBeGreaterThanOrEqual(10);
+    });
+  });
+
   describe('end-to-end: pairing → auth resolution', () => {
     it('paired device resolves as callerType=device', () => {
       const { resolveCallerType } = require('../../src/auth/caller_type');
@@ -182,6 +239,59 @@ describe('Device Pairing Ceremony', () => {
       expect(device).not.toBeNull();
       expect(device!.deviceName).toBe('TestPhone');
       expect(device!.revoked).toBe(false);
+    });
+
+    it('revocation cascades to auth — device DID unregistered', () => {
+      const { resolveCallerType } = require('../../src/auth/caller_type');
+      const { revokeDevice, getByPublicKey } = require('../../src/devices/registry');
+      const { multibaseToPublicKey, deriveDIDKey } = require('../../src/identity/did');
+
+      // Pair a device
+      const { code } = generatePairingCode();
+      const result = completePairing(code, 'RevokablePhone', testMultibase1);
+
+      // Derive DID
+      const pubKey = multibaseToPublicKey(testMultibase1);
+      const deviceDID = deriveDIDKey(pubKey);
+
+      // Before revocation: device resolves as 'device' in auth
+      expect(resolveCallerType(deviceDID).callerType).toBe('device');
+
+      // Revoke the device
+      revokeDevice(result.deviceId);
+
+      // After revocation: device marked as revoked in registry
+      const device = getByPublicKey(testMultibase1);
+      expect(device!.revoked).toBe(true);
+
+      // After revocation: device DID NO LONGER resolves as 'device' in auth
+      // This was the security bug — without cascade, it would still resolve as 'device'
+      const identity = resolveCallerType(deviceDID);
+      expect(identity.callerType).not.toBe('device');
+      expect(identity.callerType).toBe('unknown');
+    });
+  });
+
+  describe('verifyPairingIdentityBinding', () => {
+    it('returns true when key derives to claimed DID', () => {
+      const did = require('../../src/identity/did').deriveDIDKey(getPublicKey(testSeed1));
+      expect(verifyPairingIdentityBinding(testMultibase1, did)).toBe(true);
+    });
+
+    it('returns false when DID does not match key', () => {
+      const wrongDID = 'did:key:z6MkWrongDID';
+      expect(verifyPairingIdentityBinding(testMultibase1, wrongDID)).toBe(false);
+    });
+
+    it('returns false for invalid multibase', () => {
+      expect(verifyPairingIdentityBinding('invalidKey', 'did:key:z6MkX')).toBe(false);
+    });
+
+    it('different keys produce different DIDs (cross-check)', () => {
+      const did1 = require('../../src/identity/did').deriveDIDKey(getPublicKey(testSeed1));
+      const did2 = require('../../src/identity/did').deriveDIDKey(getPublicKey(testSeed2));
+      expect(verifyPairingIdentityBinding(testMultibase1, did1)).toBe(true);
+      expect(verifyPairingIdentityBinding(testMultibase1, did2)).toBe(false);
     });
   });
 });

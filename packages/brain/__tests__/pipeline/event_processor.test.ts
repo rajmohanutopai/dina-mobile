@@ -8,8 +8,8 @@ import { processEvent, processEvents, type EventInput, type EventResult } from '
 
 describe('Event Processor', () => {
   describe('approval_needed', () => {
-    it('creates an approval request payload', () => {
-      const result = processEvent({
+    it('creates an approval request payload', async () => {
+      const result = await processEvent({
         event: 'approval_needed',
         data: {
           action: 'unlock_persona',
@@ -28,8 +28,8 @@ describe('Event Processor', () => {
       expect(r.persona).toBe('health');
     });
 
-    it('rejects missing action', () => {
-      const result = processEvent({
+    it('rejects missing action', async () => {
+      const result = await processEvent({
         event: 'approval_needed',
         data: { requester_did: 'did:key:z6Mk' },
       });
@@ -38,8 +38,8 @@ describe('Event Processor', () => {
       expect(result.error).toContain('action is required');
     });
 
-    it('defaults persona to general', () => {
-      const result = processEvent({
+    it('defaults persona to general', async () => {
+      const result = await processEvent({
         event: 'approval_needed',
         data: { action: 'test', requester_did: 'did:key:z6Mk' },
       });
@@ -50,8 +50,8 @@ describe('Event Processor', () => {
   });
 
   describe('reminder_fired', () => {
-    it('classifies priority and creates notification payload', () => {
-      const result = processEvent({
+    it('classifies priority and creates notification payload', async () => {
+      const result = await processEvent({
         event: 'reminder_fired',
         data: {
           message: 'Call the dentist',
@@ -72,8 +72,8 @@ describe('Event Processor', () => {
       expect(r.interrupt).toBe(false);
     });
 
-    it('classifies security-related reminder as Tier 1', () => {
-      const result = processEvent({
+    it('classifies security-related reminder as Tier 1', async () => {
+      const result = await processEvent({
         event: 'reminder_fired',
         data: {
           message: 'Security alert: Review unusual login',
@@ -88,8 +88,8 @@ describe('Event Processor', () => {
       expect(r.interrupt).toBe(true);
     });
 
-    it('rejects missing message', () => {
-      const result = processEvent({
+    it('rejects missing message', async () => {
+      const result = await processEvent({
         event: 'reminder_fired',
         data: { persona: 'general' },
       });
@@ -100,8 +100,8 @@ describe('Event Processor', () => {
   });
 
   describe('post_publish', () => {
-    it('runs post-publish handler on stored item', () => {
-      const result = processEvent({
+    it('runs post-publish handler on stored item', async () => {
+      const result = await processEvent({
         event: 'post_publish',
         data: {
           id: 'item-1',
@@ -121,8 +121,8 @@ describe('Event Processor', () => {
       expect(typeof r.ambiguousRouting).toBe('boolean');
     });
 
-    it('rejects missing id', () => {
-      const result = processEvent({
+    it('rejects missing id', async () => {
+      const result = await processEvent({
         event: 'post_publish',
         data: { summary: 'test' },
       });
@@ -131,8 +131,8 @@ describe('Event Processor', () => {
       expect(result.error).toContain('id and summary are required');
     });
 
-    it('rejects missing summary', () => {
-      const result = processEvent({
+    it('rejects missing summary', async () => {
+      const result = await processEvent({
         event: 'post_publish',
         data: { id: 'item-1' },
       });
@@ -142,8 +142,8 @@ describe('Event Processor', () => {
   });
 
   describe('persona_unlocked', () => {
-    it('creates drain request for persona', () => {
-      const result = processEvent({
+    it('creates drain request for persona', async () => {
+      const result = await processEvent({
         event: 'persona_unlocked',
         data: { persona: 'health' },
       });
@@ -154,8 +154,8 @@ describe('Event Processor', () => {
       expect(r.persona).toBe('health');
     });
 
-    it('rejects missing persona', () => {
-      const result = processEvent({
+    it('rejects missing persona', async () => {
+      const result = await processEvent({
         event: 'persona_unlocked',
         data: {},
       });
@@ -166,8 +166,8 @@ describe('Event Processor', () => {
   });
 
   describe('staging_batch', () => {
-    it('creates batch trigger with default limit', () => {
-      const result = processEvent({
+    it('creates batch trigger with default limit', async () => {
+      const result = await processEvent({
         event: 'staging_batch',
         data: {},
       });
@@ -178,8 +178,8 @@ describe('Event Processor', () => {
       expect(r.limit).toBe(10);
     });
 
-    it('accepts custom limit', () => {
-      const result = processEvent({
+    it('accepts custom limit', async () => {
+      const result = await processEvent({
         event: 'staging_batch',
         data: { limit: 25 },
       });
@@ -189,8 +189,8 @@ describe('Event Processor', () => {
   });
 
   describe('unknown event', () => {
-    it('returns handled=false for unknown event type', () => {
-      const result = processEvent({
+    it('returns handled=false for unknown event type', async () => {
+      const result = await processEvent({
         event: 'unknown_event' as any,
         data: {},
       });
@@ -201,14 +201,14 @@ describe('Event Processor', () => {
   });
 
   describe('processEvents (batch)', () => {
-    it('processes multiple events and returns results for each', () => {
+    it('processes multiple events and returns results for each', async () => {
       const inputs: EventInput[] = [
         { event: 'approval_needed', data: { action: 'test', requester_did: 'did:key:z6Mk' } },
         { event: 'staging_batch', data: { limit: 5 } },
         { event: 'persona_unlocked', data: { persona: 'work' } },
       ];
 
-      const results = processEvents(inputs);
+      const results = await processEvents(inputs);
 
       expect(results).toHaveLength(3);
       expect(results[0].event).toBe('approval_needed');
@@ -219,13 +219,13 @@ describe('Event Processor', () => {
       expect(results[2].handled).toBe(true);
     });
 
-    it('handles mix of success and failure', () => {
+    it('handles mix of success and failure', async () => {
       const inputs: EventInput[] = [
         { event: 'approval_needed', data: { action: 'test', requester_did: 'did:key:z6Mk' } },
         { event: 'approval_needed', data: {} }, // missing action → error
       ];
 
-      const results = processEvents(inputs);
+      const results = await processEvents(inputs);
 
       expect(results[0].handled).toBe(true);
       expect(results[1].handled).toBe(false);

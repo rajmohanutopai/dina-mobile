@@ -168,10 +168,9 @@ describe('Identity HTTP Endpoints', () => {
       expect(res.body['@context']).toContain('https://www.w3.org/ns/did/v1');
       expect(res.body.id).toBe(did);
       expect(res.body.verificationMethod).toHaveLength(1);
-      expect(res.body.verificationMethod[0].type).toBe('Ed25519VerificationKey2020');
+      expect(res.body.verificationMethod[0].type).toBe('Multikey');
       expect(res.body.verificationMethod[0].publicKeyMultibase).toMatch(/^z6Mk/);
-      expect(res.body.authentication).toContain(`${did}#keys-1`);
-      expect(res.body.assertionMethod).toContain(`${did}#keys-1`);
+      expect(res.body.authentication).toContain(`${did}#key-1`);
     });
 
     it('returns 503 when identity not initialized', async () => {

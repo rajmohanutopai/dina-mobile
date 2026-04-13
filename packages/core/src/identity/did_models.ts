@@ -31,14 +31,14 @@ export function deserializeDIDDocument(json: string): DIDDocument {
   const raw = JSON.parse(json);
 
   return {
-    '@context': raw['@context'] ?? ['https://www.w3.org/ns/did/v1'],
+    '@context': raw['@context'] ?? ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
     id: raw.id,
     verificationMethod: normalizeVerificationMethods(
       raw.verificationMethod ?? raw.verification_method ?? [],
     ),
     authentication: raw.authentication ?? [],
-    assertionMethod: raw.assertionMethod ?? raw.assertion_method ?? [],
     service: normalizeServices(raw.service ?? []),
+    ...(raw.created ? { created: raw.created } : {}),
   };
 }
 
@@ -57,7 +57,7 @@ export function verifyJsonRoundtrip(doc: DIDDocument): boolean {
 function normalizeVerificationMethods(vms: unknown[]): VerificationMethod[] {
   return vms.map((vm: any) => ({
     id: vm.id,
-    type: vm.type ?? 'Ed25519VerificationKey2020',
+    type: vm.type ?? 'Multikey',
     controller: vm.controller,
     publicKeyMultibase: vm.publicKeyMultibase ?? vm.public_key_multibase,
   }));

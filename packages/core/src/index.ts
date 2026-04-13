@@ -91,3 +91,7 @@ export * from './process/model';
 export type { Platform } from './process/model';
 export * from './lifecycle/sleep_wake';
 export type { AppState } from './lifecycle/sleep_wake';
+export * from './trust/network_search';
+export * from './relay/msgbox_handlers';
+export { bootstrapMsgBox } from './relay/msgbox_boot';
+export type { MsgBoxBootConfig } from './relay/msgbox_boot';

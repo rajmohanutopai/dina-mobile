@@ -39,7 +39,7 @@ describe('Identity Recovery from Mnemonic', () => {
       // Verify the new passphrase works
       const ws = deserializeWrappedSeed(result.wrapped);
       const seed = await unwrapSeed('new-passphrase', ws);
-      expect(seed.length).toBe(64);
+      expect(seed.length).toBe(32); // Go-compatible 32-byte entropy
     }, 60_000);
 
     it('old passphrase does NOT decrypt new wrapped seed', async () => {

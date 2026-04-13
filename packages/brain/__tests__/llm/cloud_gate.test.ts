@@ -25,11 +25,11 @@ describe('Cloud LLM Gate', () => {
       expect(result.scrubbed).toBe(false);
     });
 
-    it('non-sensitive persona + cloud → allowed without scrub', () => {
+    it('non-sensitive persona + cloud → allowed WITH scrub (cloud-wide policy)', () => {
       const result = checkCloudGate('Meeting notes with alice@work.com', 'general', 'claude');
       expect(result.allowed).toBe(true);
-      expect(result.scrubbed).toBe(false);
-      expect(result.scrubbedText).toContain('alice@work.com');
+      expect(result.scrubbed).toBe(true); // cloud-wide scrub
+      expect(result.scrubbedText).not.toContain('alice@work.com');
     });
 
     it('sensitive persona + cloud → scrubbed', () => {
@@ -89,6 +89,23 @@ describe('Cloud LLM Gate', () => {
     });
   });
 
+  describe('gate rejection (scrub failure)', () => {
+    it('refuses cloud when scrub throws', () => {
+      // Mock EntityVault to throw during scrub — simulates catastrophic scrub failure
+      const origScrub = require('../../src/pii/entity_vault').EntityVault.prototype.scrub;
+      require('../../src/pii/entity_vault').EntityVault.prototype.scrub = () => { throw new Error('scrub catastrophe'); };
+
+      const result = checkCloudGate('Sensitive data', 'health', 'claude');
+      expect(result.allowed).toBe(false);
+      expect(result.scrubbed).toBe(false);
+      expect(result.fallback).toBe('local');
+      expect(result.reason).toContain('Scrub failed');
+
+      // Restore
+      require('../../src/pii/entity_vault').EntityVault.prototype.scrub = origScrub;
+    });
+  });
+
   describe('needsScrub', () => {
     it('health + cloud → true', () => {
       expect(needsScrub('health', 'claude')).toBe(true);
@@ -98,8 +115,8 @@ describe('Cloud LLM Gate', () => {
       expect(needsScrub('financial', 'openai')).toBe(true);
     });
 
-    it('general + cloud → false', () => {
-      expect(needsScrub('general', 'claude')).toBe(false);
+    it('general + cloud → true (cloud-wide scrub policy)', () => {
+      expect(needsScrub('general', 'claude')).toBe(true);
     });
 
     it('health + local → false', () => {

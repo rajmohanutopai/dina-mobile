@@ -8,7 +8,11 @@
  * Source: brain/tests/test_vault_context.py
  */
 
-import { queryVault, getItem } from '../../../core/src/vault/crud';
+import { queryVault, getItem, browseRecent } from '../../../core/src/vault/crud';
+import { listPersonas } from '../../../core/src/persona/service';
+import { getContact, resolveByName, findByAlias, listContacts } from '../../../core/src/contacts/directory';
+import { listPending } from '../../../core/src/reminders/service';
+import { searchTrustNetwork, type TrustSearchQuery, type SearchType } from '../../../core/src/trust/network_search';
 
 export interface ContextItem {
   id: string;
@@ -79,9 +83,19 @@ export function resetReasoningProvider(): void {
  */
 const TOOL_DECLARATIONS: Array<{ name: string; description: string; parameters?: Record<string, unknown> }> = [
   {
+    name: 'list_personas',
+    description: 'List all available persona vaults the user has. Returns persona names and their types (default, sensitive, standard).',
+    parameters: {},
+  },
+  {
     name: 'vault_search',
     description: 'Search the user\'s vault for relevant memories, notes, and stored information. Returns ranked results with progressive detail levels.',
     parameters: { persona: 'string', query: 'string', limit: 'number' },
+  },
+  {
+    name: 'browse_vault',
+    description: 'Browse recent items in a persona vault without a search query. Returns the most recently stored items.',
+    parameters: { persona: 'string', limit: 'number' },
   },
   {
     name: 'vault_read',
@@ -90,13 +104,18 @@ const TOOL_DECLARATIONS: Array<{ name: string; description: string; parameters?:
   },
   {
     name: 'contact_lookup',
-    description: 'Look up a contact by name, alias, or DID. Returns contact details, relationship notes, and trust level.',
+    description: 'Look up a contact by name, alias, or DID. Returns contact details, relationship, trust level, and sharing tier.',
     parameters: { query: 'string' },
   },
   {
     name: 'reminder_check',
-    description: 'Check upcoming reminders and calendar events for a person or topic.',
+    description: 'Check upcoming reminders for a person or topic within a time window.',
     parameters: { query: 'string', days_ahead: 'number' },
+  },
+  {
+    name: 'search_trust_network',
+    description: 'Search the decentralized trust network for peer reviews about a person, product, or vendor. Returns aggregated trust scores and individual reviews.',
+    parameters: { query: 'string', type: 'string' },
   },
 ];
 
@@ -127,6 +146,9 @@ export async function executeToolSearch(
   query: string,
   limit?: number,
 ): Promise<ContextItem[]> {
+  // Security: only search personas the user has access to
+  if (!getAccessiblePersonas().includes(persona)) return [];
+
   const searchLimit = limit ?? 20;
   const results = queryVault(persona, { mode: 'fts5', text: query, limit: searchLimit });
 
@@ -142,10 +164,15 @@ export async function executeToolSearch(
 
 /**
  * Assemble vault context for a query across accessible personas.
+ *
+ * @param requestId — optional trace requestId, propagated to tool calls for audit correlation.
+ *   Currently used for trace annotation; in production, callers should also
+ *   bind this ID to BrainCoreClient via setRequestId() for HTTP header threading.
  */
 export async function assembleContext(
   query: string,
   maxTokens?: number,
+  requestId?: string,
 ): Promise<AssembledContext> {
   const budget = maxTokens ?? DEFAULT_MAX_TOKENS;
   const personas = getAccessiblePersonas();
@@ -252,12 +279,22 @@ export async function runReasoningAgent(
 /** Execute a single tool call. */
 async function executeToolCall(call: ToolCall): Promise<unknown> {
   switch (call.name) {
+    case 'list_personas':
+      return executeListPersonas();
+
     case 'vault_search': {
       const persona = String(call.args.persona ?? 'general');
       const query = String(call.args.query ?? '');
       const limit = Number(call.args.limit ?? 10);
       return executeToolSearch(persona, query, limit);
     }
+
+    case 'browse_vault': {
+      const persona = String(call.args.persona ?? 'general');
+      const limit = Number(call.args.limit ?? 10);
+      return executeBrowseVault(persona, limit);
+    }
+
     case 'vault_read': {
       const itemId = String(call.args.item_id ?? '');
       for (const persona of getAccessiblePersonas()) {
@@ -266,9 +303,129 @@ async function executeToolCall(call: ToolCall): Promise<unknown> {
       }
       return null;
     }
+
+    case 'contact_lookup': {
+      const query = String(call.args.query ?? '');
+      return executeContactLookup(query);
+    }
+
+    case 'reminder_check': {
+      const query = String(call.args.query ?? '');
+      const daysAhead = Number(call.args.days_ahead ?? 7);
+      return executeReminderCheck(query, daysAhead);
+    }
+
+    case 'search_trust_network': {
+      const query = String(call.args.query ?? '');
+      const searchType = String(call.args.type ?? 'entity_reviews') as SearchType;
+      return executeTrustSearch(query, searchType);
+    }
+
     default:
       return { error: `unknown tool: ${call.name}` };
   }
+}
+
+/** List accessible personas with their types. */
+function executeListPersonas(): Array<{ name: string; tier: string; accessible: boolean }> {
+  const accessible = new Set(getAccessiblePersonas());
+  return listPersonas().map(p => ({
+    name: p.name,
+    tier: p.tier,
+    accessible: accessible.has(p.name),
+  }));
+}
+
+/** Browse recent items in a persona vault without a search query. */
+function executeBrowseVault(persona: string, limit: number): ContextItem[] {
+  if (!getAccessiblePersonas().includes(persona)) {
+    return []; // Persona not accessible — return empty
+  }
+
+  const now = Date.now();
+  const oneWeek = 7 * 24 * 60 * 60 * 1000;
+  const items = browseRecent(persona, now - oneWeek, now, limit);
+
+  return items.map((item, index) => ({
+    id: item.id,
+    content_l0: item.content_l0 || item.summary || '',
+    content_l1: index < 3 ? (item.content_l1 || undefined) : undefined,
+    body: undefined, // browse returns summaries, not full bodies
+    score: 1.0 - (index * 0.05),
+    persona,
+  }));
+}
+
+/**
+ * Look up a contact by name, alias, or DID.
+ *
+ * Returns contact details in a structured format suitable for LLM consumption.
+ */
+function executeContactLookup(query: string): Record<string, unknown> | null {
+  if (!query) return null;
+
+  // Try DID lookup first
+  if (query.startsWith('did:')) {
+    const contact = getContact(query);
+    if (contact) return formatContactForLLM(contact);
+  }
+
+  // Try name lookup
+  const byName = resolveByName(query);
+  if (byName) return formatContactForLLM(byName);
+
+  // Try alias lookup
+  const byAlias = findByAlias(query);
+  if (byAlias) return formatContactForLLM(byAlias);
+
+  return null;
+}
+
+function formatContactForLLM(contact: {
+  did: string;
+  displayName: string;
+  trustLevel: string;
+  sharingTier: string;
+  relationship: string;
+  dataResponsibility: string;
+  notes: string;
+}): Record<string, unknown> {
+  return {
+    did: contact.did,
+    name: contact.displayName,
+    trust: contact.trustLevel,
+    sharing: contact.sharingTier,
+    relationship: contact.relationship,
+    responsibility: contact.dataResponsibility,
+    notes: contact.notes || undefined,
+  };
+}
+
+/**
+ * Check upcoming reminders, optionally filtered by a keyword query.
+ *
+ * Returns reminders due within the specified days-ahead window.
+ */
+function executeReminderCheck(
+  query: string,
+  daysAhead: number,
+): Array<{ id: string; message: string; due_at: number; persona: string; kind: string }> {
+  const now = Date.now();
+  const windowEnd = now + daysAhead * 24 * 60 * 60 * 1000;
+  const pending = listPending(windowEnd);
+
+  // Filter by query if provided
+  const filtered = query
+    ? pending.filter(r => r.message.toLowerCase().includes(query.toLowerCase()))
+    : pending;
+
+  return filtered.slice(0, 20).map(r => ({
+    id: r.id,
+    message: r.message,
+    due_at: r.due_at,
+    persona: r.persona,
+    kind: r.kind,
+  }));
 }
 
 /** Build a context-based answer without LLM. */
@@ -297,6 +454,33 @@ function formatContext(context: AssembledContext): string {
     if (item.body) text += `\n  Full: ${item.body}`;
     return text;
   }).join('\n');
+}
+
+/**
+ * Search the trust network for peer reviews about an entity.
+ */
+async function executeTrustSearch(
+  query: string,
+  type: SearchType,
+): Promise<Record<string, unknown>> {
+  try {
+    const result = await searchTrustNetwork({ query, type, limit: 10 });
+    return {
+      query: result.query,
+      aggregateScore: result.aggregateScore,
+      totalReviews: result.totalReviews,
+      fromLocalContacts: result.fromLocalContacts,
+      fromNetwork: result.fromNetwork,
+      reviews: result.reviews.slice(0, 5).map(r => ({
+        reviewer: r.reviewerName ?? r.reviewerDID,
+        rating: r.rating,
+        category: r.category,
+        comment: r.comment,
+      })),
+    };
+  } catch {
+    return { error: 'Trust network search failed', query };
+  }
 }
 
 /** Estimate token count for a context item. */

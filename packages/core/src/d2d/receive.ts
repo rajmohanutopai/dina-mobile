@@ -33,11 +33,22 @@ const QUARANTINE_LEVELS = new Set(['unknown']);
 /**
  * Process an incoming D2D message for vault staging.
  *
+ * Trust evaluation follows Go's contacts-only model (EvaluateIngress):
+ *   - blocked → drop
+ *   - Any explicit contact (even with trust_level="unknown") → accept
+ *   - Not a contact at all → quarantine
+ *
+ * The distinction is critical: Go ACCEPTS messages from contacts with
+ * trust_level="unknown". The trust level on a contact indicates verification
+ * status, not whether the sender is recognized. A contact with "unknown"
+ * trust is still an explicit contact the user added.
+ *
  * @param messageType — D2D message type (e.g., 'social.update')
  * @param senderDID — DID of the sender
  * @param senderTrust — trust level of the sender
  * @param body — message body (JSON string)
  * @param messageId — unique message ID
+ * @param isContact — whether the sender is in the contact directory
  */
 export function receiveAndStage(
   messageType: string,
@@ -45,6 +56,7 @@ export function receiveAndStage(
   senderTrust: string,
   body: string,
   messageId: string,
+  isContact: boolean = false,
 ): ReceiveResult {
   // 1. Check if message type should be stored at all
   if (!shouldStore(messageType)) {
@@ -56,12 +68,14 @@ export function receiveAndStage(
     return stageMessage(messageType, senderDID, body, messageId);
   }
 
-  // 3. Trust evaluation
+  // 3. Trust evaluation — contacts-only model (matches Go EvaluateIngress)
   if (senderTrust === 'blocked') {
     return { action: 'dropped', reason: 'Sender is blocked' };
   }
 
-  if (QUARANTINE_LEVELS.has(senderTrust)) {
+  // Any explicit contact passes (even with trust_level="unknown").
+  // Only non-contacts get quarantined.
+  if (!isContact) {
     return {
       action: 'quarantined',
       vaultItemType: mapToVaultItemType(messageType) ?? messageType,

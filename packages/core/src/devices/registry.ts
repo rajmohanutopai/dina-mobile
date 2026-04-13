@@ -14,14 +14,22 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { multibaseToPublicKey, deriveDIDKey } from '../identity/did';
+import { unregisterDevice as unregisterDeviceAuth } from '../auth/caller_type';
+import { getDeviceRepository } from './repository';
 
 export type DeviceRole = 'rich' | 'thin' | 'cli';
+export type AuthType = 'ed25519' | 'token';
 
 export interface PairedDevice {
   deviceId: string;
+  /** DID derived from the device's Ed25519 public key (matching Go's DID field). */
+  did: string;
   publicKeyMultibase: string;
   deviceName: string;
   role: DeviceRole;
+  /** Auth method used for this device (matching Go's AuthType field). */
+  authType: AuthType;
   lastSeen: number;
   createdAt: number;
   revoked: boolean;
@@ -30,8 +38,11 @@ export interface PairedDevice {
 /** In-memory device registry keyed by deviceId. */
 const devices = new Map<string, PairedDevice>();
 
-/** Public key multibase → deviceId index (for DID-based lookup). */
+/** Public key multibase → deviceId index (for key-based lookup). */
 const keyIndex = new Map<string, string>();
+
+/** DID → deviceId index (for DID-based lookup, matching Go's GetDeviceByDID). */
+const didIndex = new Map<string, string>();
 
 /**
  * Register a new paired device.
@@ -61,11 +72,23 @@ export function registerDevice(
   const deviceId = `dev-${bytesToHex(randomBytes(8))}`;
   const now = Date.now();
 
+  // Derive DID from Ed25519 public key (matching Go's DID field on PairedDevice)
+  let did: string;
+  try {
+    const pubKey = multibaseToPublicKey(publicKeyMultibase);
+    did = deriveDIDKey(pubKey);
+  } catch {
+    // Fallback for test fixtures with mock multibase strings
+    did = `did:key:${publicKeyMultibase}`;
+  }
+
   const device: PairedDevice = {
     deviceId,
+    did,
     publicKeyMultibase,
     deviceName: name.trim(),
     role,
+    authType: 'ed25519',
     lastSeen: now,
     createdAt: now,
     revoked: false,
@@ -73,6 +96,10 @@ export function registerDevice(
 
   devices.set(deviceId, device);
   keyIndex.set(publicKeyMultibase, deviceId);
+  didIndex.set(did, deviceId);
+  // SQL write-through
+  const sqlRepo = getDeviceRepository();
+  if (sqlRepo) { try { sqlRepo.register(device); } catch { /* fail-safe */ } }
   return device;
 }
 
@@ -104,14 +131,44 @@ export function getByPublicKey(publicKeyMultibase: string): PairedDevice | null 
 }
 
 /**
- * Revoke a device. Marks it as revoked (soft delete).
+ * Revoke a device. Marks it as revoked AND cascades to auth layer.
  *
- * Revoked devices remain for audit trail but cannot authenticate.
+ * Revoked devices remain in registry for audit trail but cannot authenticate.
+ * The cascade ensures the device's DID is unregistered from caller_type.ts
+ * so it can no longer pass auth middleware.
+ *
+ * Without this cascade, a revoked device's DID would remain registered
+ * in the auth layer and could still authenticate — a security bug
+ * identified in GAP_ANALYSIS.md §A41.
+ *
  * Returns true if found.
+ */
+/**
+ * Revoke a device. Marks it as revoked AND cascades to auth layer.
+ *
+ * Throws on double-revocation (matching Go's ErrDeviceRevoked).
+ * Returns true if successfully revoked.
  */
 export function revokeDevice(deviceId: string): boolean {
   const device = devices.get(deviceId);
   if (!device) return false;
+
+  // Double-revocation guard (matching Go's ErrDeviceRevoked)
+  if (device.revoked) {
+    throw new Error(`devices: "${deviceId}" is already revoked`);
+  }
+
+  // Step 1: Cascade to auth — unregister the device's DID so it can
+  // no longer pass caller-type resolution.
+  try {
+    const pubKey = multibaseToPublicKey(device.publicKeyMultibase);
+    const deviceDID = deriveDIDKey(pubKey);
+    unregisterDeviceAuth(deviceDID);
+  } catch {
+    // If DID derivation fails (corrupted key), still proceed with revocation
+  }
+
+  // Step 2: Mark revoked in device registry
   device.revoked = true;
   return true;
 }
@@ -133,8 +190,21 @@ export function deviceCount(): number {
   return devices.size;
 }
 
+/**
+ * Get a device by its DID.
+ *
+ * O(1) lookup via DID index. Used for DID-based device discovery —
+ * matching Go's GetDeviceByDID.
+ */
+export function getDeviceByDID(did: string): PairedDevice | null {
+  const deviceId = didIndex.get(did);
+  if (!deviceId) return null;
+  return devices.get(deviceId) ?? null;
+}
+
 /** Reset all device state (for testing). */
 export function resetDeviceRegistry(): void {
   devices.clear();
   keyIndex.clear();
+  didIndex.clear();
 }

@@ -18,6 +18,9 @@ import {
 } from '../../src/vault_context/assembly';
 import type { LLMMessage } from '../../src/vault_context/assembly';
 import { storeItem, clearVaults } from '../../../core/src/vault/crud';
+import { createPersona, resetPersonaState, openPersona } from '../../../core/src/persona/service';
+import { addContact, resetContactDirectory } from '../../../core/src/contacts/directory';
+import { createReminder, resetReminderState } from '../../../core/src/reminders/service';
 import { makeVaultItem, resetFactoryCounters } from '@dina/test-harness';
 
 describe('Vault Context Assembly', () => {
@@ -202,24 +205,19 @@ describe('Vault Context Assembly', () => {
   });
 
   describe('getToolDeclarations', () => {
-    it('returns list of available tools', () => {
-      expect(getToolDeclarations().length).toBeGreaterThan(0);
+    it('returns 7 tools', () => {
+      expect(getToolDeclarations().length).toBe(7);
     });
 
-    it('includes vault_search tool', () => {
-      expect(getToolDeclarations().map(t => t.name)).toContain('vault_search');
-    });
-
-    it('includes vault_read tool', () => {
-      expect(getToolDeclarations().map(t => t.name)).toContain('vault_read');
-    });
-
-    it('includes contact_lookup tool', () => {
-      expect(getToolDeclarations().map(t => t.name)).toContain('contact_lookup');
-    });
-
-    it('includes reminder_check tool', () => {
-      expect(getToolDeclarations().map(t => t.name)).toContain('reminder_check');
+    it('includes all required tools', () => {
+      const names = getToolDeclarations().map(t => t.name);
+      expect(names).toContain('list_personas');
+      expect(names).toContain('vault_search');
+      expect(names).toContain('browse_vault');
+      expect(names).toContain('vault_read');
+      expect(names).toContain('contact_lookup');
+      expect(names).toContain('reminder_check');
+      expect(names).toContain('search_trust_network');
     });
 
     it('every tool has name and description', () => {
@@ -227,6 +225,244 @@ describe('Vault Context Assembly', () => {
         expect(tool.name.length).toBeGreaterThan(0);
         expect(tool.description.length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  describe('tool execution via reasoning agent', () => {
+    beforeEach(() => {
+      resetPersonaState();
+      resetContactDirectory();
+      resetReminderState();
+      createPersona('general', 'default');
+      createPersona('health', 'sensitive');
+      openPersona('general');
+      openPersona('health');
+      setAccessiblePersonas(['general', 'health']);
+    });
+
+    it('list_personas returns available personas', async () => {
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        // Check if we already got a tool response
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Done.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'list_personas', args: {} }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('List my personas', ctx);
+      expect(Array.isArray(toolResult)).toBe(true);
+      const personas = toolResult as Array<{ name: string; tier: string; accessible: boolean }>;
+      expect(personas.find(p => p.name === 'general')).toBeDefined();
+      expect(personas.find(p => p.name === 'health')).toBeDefined();
+    });
+
+    it('browse_vault returns recent items without search query', async () => {
+      storeItem('general', makeVaultItem({
+        summary: 'Recent note A', body: '', created_at: Date.now(),
+      }));
+      storeItem('general', makeVaultItem({
+        summary: 'Recent note B', body: '', created_at: Date.now(),
+      }));
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found recent items.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'browse_vault', args: { persona: 'general', limit: 5 } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Show recent items', ctx);
+      expect(Array.isArray(toolResult)).toBe(true);
+      expect((toolResult as unknown[]).length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('contact_lookup finds by name', async () => {
+      addContact('did:plc:alice', 'Alice', 'trusted', 'full', 'friend');
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found Alice.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'contact_lookup', args: { query: 'Alice' } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Who is Alice?', ctx);
+      expect(toolResult).toBeDefined();
+      expect((toolResult as any).name).toBe('Alice');
+      expect((toolResult as any).trust).toBe('trusted');
+      expect((toolResult as any).relationship).toBe('friend');
+    });
+
+    it('contact_lookup finds by DID', async () => {
+      addContact('did:plc:bob', 'Bob');
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found Bob.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'contact_lookup', args: { query: 'did:plc:bob' } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Look up bob', ctx);
+      expect((toolResult as any).name).toBe('Bob');
+    });
+
+    it('contact_lookup returns null for unknown contact', async () => {
+      let toolResult: unknown = 'not_set';
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Not found.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'contact_lookup', args: { query: 'Unknown Person' } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Who is Unknown Person?', ctx);
+      expect(toolResult).toBeNull();
+    });
+
+    it('reminder_check returns upcoming reminders', async () => {
+      const futureTime = Date.now() + 2 * 24 * 60 * 60 * 1000; // 2 days from now
+      createReminder({
+        message: 'Call dentist',
+        due_at: futureTime,
+        persona: 'general',
+        kind: 'appointment',
+      });
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found reminder.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'reminder_check', args: { query: 'dentist', days_ahead: 7 } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Any upcoming dentist appointments?', ctx);
+      expect(Array.isArray(toolResult)).toBe(true);
+      expect((toolResult as any[]).length).toBe(1);
+      expect((toolResult as any[])[0].message).toContain('dentist');
+    });
+
+    it('reminder_check with no query returns all pending', async () => {
+      const futureTime1 = Date.now() + 1 * 24 * 60 * 60 * 1000;
+      const futureTime2 = Date.now() + 2 * 24 * 60 * 60 * 1000;
+      createReminder({ message: 'Task A', due_at: futureTime1, persona: 'general', kind: 'task' });
+      createReminder({ message: 'Task B', due_at: futureTime2, persona: 'general', kind: 'task' });
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found reminders.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'reminder_check', args: { query: '', days_ahead: 3 } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('What reminders do I have?', ctx);
+      expect((toolResult as any[]).length).toBe(2);
+    });
+
+    it('vault_search respects persona accessibility', async () => {
+      setAccessiblePersonas(['general']); // health NOT accessible
+      storeItem('health', makeVaultItem({ summary: 'Secret health data' }));
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Done.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'vault_search', args: { persona: 'health', query: 'secret', limit: 10 } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Search health vault', ctx);
+      expect(Array.isArray(toolResult)).toBe(true);
+      expect((toolResult as any[]).length).toBe(0); // blocked by accessibility check
+    });
+
+    it('browse_vault respects persona accessibility', async () => {
+      setAccessiblePersonas(['general']); // health NOT accessible
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Done.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'browse_vault', args: { persona: 'health', limit: 5 } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Browse health vault', ctx);
+      expect(Array.isArray(toolResult)).toBe(true);
+      expect((toolResult as any[]).length).toBe(0); // health not accessible
+    });
+
+    it('search_trust_network returns trust data for known contacts', async () => {
+      addContact('did:plc:vendor', 'Acme Corp', 'trusted', 'full', 'colleague');
+
+      let toolResult: unknown = null;
+      registerReasoningProvider(async (messages: LLMMessage[]) => {
+        const toolMsg = messages.find(m => m.role === 'tool');
+        if (toolMsg) {
+          toolResult = JSON.parse(toolMsg.content);
+          return { role: 'assistant' as const, content: 'Found trust data.' };
+        }
+        return {
+          role: 'assistant' as const, content: '',
+          toolCalls: [{ name: 'search_trust_network', args: { query: 'Acme', type: 'entity_reviews' } }],
+        };
+      });
+      const ctx = { items: [], tokenEstimate: 0, personas: ['general'] };
+      await runReasoningAgent('Is Acme Corp trustworthy?', ctx);
+      expect(toolResult).toBeDefined();
+      expect((toolResult as any).totalReviews).toBeGreaterThanOrEqual(1);
+      expect((toolResult as any).aggregateScore).not.toBeNull();
     });
   });
 

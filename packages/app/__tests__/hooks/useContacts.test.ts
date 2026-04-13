@@ -163,10 +163,10 @@ describe('Contacts Tab Hook (6.16)', () => {
     it('formats alias label', () => {
       addNewContact('did:key:z6MkA', 'Alice');
       addAlias('did:key:z6MkA', 'Ali');
-      addAlias('did:key:z6MkA', 'A');
+      addAlias('did:key:z6MkA', 'Al');
 
       const contact = getContactList()[0];
-      expect(contact.aliasLabel).toBe('Ali, A');
+      expect(contact.aliasLabel).toBe('Ali, Al');
     });
 
     it('empty alias label when no aliases', () => {

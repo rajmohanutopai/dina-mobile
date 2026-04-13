@@ -7,7 +7,10 @@
 import {
   createReminder,
   getReminder,
+  getByShortId,
   listPending,
+  nextPending,
+  fireMissedReminders,
   listByPersona,
   completeReminder,
   snoozeReminder,
@@ -21,7 +24,7 @@ describe('Reminder Service', () => {
   describe('createReminder', () => {
     it('creates a reminder with generated ID', () => {
       const r = createReminder({ message: 'Buy milk', due_at: Date.now() + 60_000, persona: 'general' });
-      expect(r.id).toMatch(/^rem-[0-9a-f]{16}$/);
+      expect(r.id).toMatch(/^rem-[0-9a-f]{32}$/); // 16 random bytes = 32 hex chars (matching Go)
       expect(r.message).toBe('Buy milk');
       expect(r.status).toBe('pending');
       expect(r.completed).toBe(0);
@@ -183,6 +186,136 @@ describe('Reminder Service', () => {
 
     it('returns false for unknown ID', () => {
       expect(deleteReminder('rem-missing')).toBe(false);
+    });
+  });
+
+  describe('nextPending (matching Go NextPending)', () => {
+    it('returns null when no reminders exist', () => {
+      expect(nextPending()).toBeNull();
+    });
+
+    it('returns the single earliest due reminder', () => {
+      const now = Date.now();
+      createReminder({ message: 'Later', due_at: now - 1000, persona: 'general' });
+      createReminder({ message: 'Earliest', due_at: now - 5000, persona: 'general' });
+      createReminder({ message: 'Recent', due_at: now - 2000, persona: 'general' });
+
+      const next = nextPending(now);
+      expect(next).not.toBeNull();
+      expect(next!.message).toBe('Earliest');
+    });
+
+    it('ignores future reminders', () => {
+      const now = Date.now();
+      createReminder({ message: 'Future', due_at: now + 60000, persona: 'general' });
+      expect(nextPending(now)).toBeNull();
+    });
+
+    it('ignores completed reminders', () => {
+      const now = Date.now();
+      const r = createReminder({ message: 'Done', due_at: now - 1000, persona: 'general' });
+      completeReminder(r.id);
+      expect(nextPending(now)).toBeNull();
+    });
+
+    it('returns only one even when multiple are due', () => {
+      const now = Date.now();
+      createReminder({ message: 'A', due_at: now - 1000, persona: 'general' });
+      createReminder({ message: 'B', due_at: now - 2000, persona: 'general' });
+      const next = nextPending(now);
+      expect(next).not.toBeNull();
+      // Should be the earliest (B), and it's a single result not an array
+      expect(next!.message).toBe('B');
+    });
+  });
+
+  describe('fireMissedReminders (startup recovery)', () => {
+    it('fires all past-due reminders', () => {
+      const now = Date.now();
+      createReminder({ message: 'Missed A', due_at: now - 5000, persona: 'general' });
+      createReminder({ message: 'Missed B', due_at: now - 3000, persona: 'general' });
+      createReminder({ message: 'Future', due_at: now + 60000, persona: 'general' });
+
+      const fired = fireMissedReminders(now);
+      expect(fired).toHaveLength(2);
+      expect(fired.map(r => r.message).sort()).toEqual(['Missed A', 'Missed B']);
+    });
+
+    it('marks fired reminders as status "fired"', () => {
+      const now = Date.now();
+      const r = createReminder({ message: 'Overdue', due_at: now - 1000, persona: 'general' });
+      fireMissedReminders(now);
+      expect(getReminder(r.id)!.status).toBe('fired');
+    });
+
+    it('returns empty when no missed reminders', () => {
+      const now = Date.now();
+      createReminder({ message: 'Future', due_at: now + 60000, persona: 'general' });
+      expect(fireMissedReminders(now)).toHaveLength(0);
+    });
+
+    it('invokes onFire callback for each fired reminder', () => {
+      const now = Date.now();
+      createReminder({ message: 'A', due_at: now - 1000, persona: 'general' });
+      createReminder({ message: 'B', due_at: now - 2000, persona: 'general' });
+
+      const messages: string[] = [];
+      fireMissedReminders(now, (r) => messages.push(r.message));
+      expect(messages).toHaveLength(2);
+    });
+
+    it('does not fire already-completed reminders', () => {
+      const now = Date.now();
+      const r = createReminder({ message: 'Done', due_at: now - 1000, persona: 'general' });
+      completeReminder(r.id);
+      expect(fireMissedReminders(now)).toHaveLength(0);
+    });
+  });
+
+  describe('short_id', () => {
+    it('generates a 4-char short_id on creation', () => {
+      const r = createReminder({ message: 'Test', due_at: Date.now(), persona: 'general' });
+      expect(r.short_id).toMatch(/^[0-9a-f]{4}$/);
+    });
+
+    it('different reminders get different short_ids', () => {
+      const r1 = createReminder({ message: 'First', due_at: Date.now() + 1000, persona: 'general', kind: 'a' });
+      const r2 = createReminder({ message: 'Second', due_at: Date.now() + 2000, persona: 'general', kind: 'b' });
+      expect(r1.short_id).not.toBe(r2.short_id);
+    });
+
+    it('getByShortId returns the correct reminder', () => {
+      const r = createReminder({ message: 'Find me', due_at: Date.now(), persona: 'general' });
+      const found = getByShortId(r.short_id);
+      expect(found).not.toBeNull();
+      expect(found!.id).toBe(r.id);
+      expect(found!.message).toBe('Find me');
+    });
+
+    it('getByShortId is case-insensitive', () => {
+      const r = createReminder({ message: 'Case test', due_at: Date.now(), persona: 'general' });
+      const upper = r.short_id.toUpperCase();
+      const found = getByShortId(upper);
+      expect(found).not.toBeNull();
+      expect(found!.id).toBe(r.id);
+    });
+
+    it('getByShortId returns null for unknown short_id', () => {
+      expect(getByShortId('zzzz')).toBeNull();
+    });
+
+    it('deleted reminder not found by short_id', () => {
+      const r = createReminder({ message: 'To delete', due_at: Date.now(), persona: 'general' });
+      const shortId = r.short_id;
+      deleteReminder(r.id);
+      expect(getByShortId(shortId)).toBeNull();
+    });
+
+    it('short_id is stable (same reminder always has same short_id)', () => {
+      const r = createReminder({ message: 'Stable', due_at: Date.now(), persona: 'general' });
+      const first = r.short_id;
+      const fetched = getReminder(r.id);
+      expect(fetched!.short_id).toBe(first);
     });
   });
 });

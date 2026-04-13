@@ -2,7 +2,8 @@
  * Tier 2 PII pattern recognizers — TypeScript port of Presidio patterns.
  *
  * Scrubbed: EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD, IP_ADDRESS, US_SSN,
- *   AADHAAR_NUMBER, IN_PAN, IN_IFSC, IN_UPI_ID, DE_STEUER_ID, FR_NIR, NL_BSN
+ *   AADHAAR_NUMBER, IN_PAN, IN_IFSC, IN_UPI_ID, IN_PASSPORT,
+ *   DE_STEUER_ID, FR_NIR, NL_BSN, SWIFT_BIC
  *
  * Safe (never scrubbed): DATE, TIME, MONEY, PERCENT, QUANTITY, ORDINAL, CARDINAL, NORP
  *
@@ -50,16 +51,33 @@ const INDIAN_PATTERNS: PatternDef[] = [
 ];
 
 const EU_PATTERNS: PatternDef[] = [
-  { entity_type: 'DE_STEUER_ID', regex: /\b\d{11}\b/g, score: 0.60 },
+  // DE_STEUER_ID: 11 digits, first digit must be 1-9 (no leading zero).
+  // Fixed: was \d{11} which allows leading zero (bug from §A76).
+  { entity_type: 'DE_STEUER_ID', regex: /\b[1-9]\d{10}\b/g, score: 0.60 },
   { entity_type: 'FR_NIR', regex: /\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b/g, score: 0.70 },
   { entity_type: 'NL_BSN', regex: /\b\d{9}\b/g, score: 0.55,
     validate: (bsn: string) => { const d = bsn.replace(/\s/g, ''); if (d.length !== 9 || !/^\d{9}$/.test(d)) return false; const w = [9,8,7,6,5,4,3,2,-1]; let s = 0; for (let i = 0; i < 9; i++) s += parseInt(d[i]) * w[i]; return s % 11 === 0 && s > 0; } },
+  // SWIFT_BIC: 8 or 11 characters. 8-char variant requires at least one digit
+  // to avoid false positives on short English words.
+  // Source: brain/src/adapter/recognizers_eu.py
+  { entity_type: 'SWIFT_BIC', regex: /\b[A-Z]{4}[A-Z0-9]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/g, score: 0.55,
+    validate: (m: string) => {
+      // 8-char BIC must contain at least one digit to reduce false positives
+      if (m.length === 8) return /\d/.test(m);
+      return true; // 11-char is less ambiguous
+    } },
+];
+
+const ADDITIONAL_PATTERNS: PatternDef[] = [
+  // IN_PASSPORT: 1 letter + 7 digits. Low base score (common false positives).
+  // Source: brain/src/adapter/recognizers_india.py
+  { entity_type: 'IN_PASSPORT', regex: /\b[A-Z]\d{7}\b/g, score: 0.30 },
 ];
 
 /** Run all Tier 2 pattern recognizers on text. */
 export function detectTier2(text: string): PatternMatch[] {
   if (!text) return [];
-  return runPatterns(text, [...STRUCTURED_PATTERNS, ...INDIAN_PATTERNS, ...EU_PATTERNS]);
+  return runPatterns(text, [...STRUCTURED_PATTERNS, ...INDIAN_PATTERNS, ...EU_PATTERNS, ...ADDITIONAL_PATTERNS]);
 }
 
 /** Check if an entity type is on the safe list (never scrubbed). */

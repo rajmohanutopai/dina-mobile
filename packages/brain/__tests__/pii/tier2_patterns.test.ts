@@ -146,4 +146,56 @@ describe('Tier 2 PII Pattern Recognizers', () => {
       expect(result.mappings.length).toBe(2);
     });
   });
+
+  describe('DE_STEUER_ID first-digit fix (§A76)', () => {
+    it('detects valid Steuer-ID (first digit 1-9)', () => {
+      // Use a number unlikely to match phone patterns (no valid phone prefix)
+      const matches = detectTier2('Steuer-ID: 56789012345');
+      expect(matches.some(m => m.entity_type === 'DE_STEUER_ID')).toBe(true);
+    });
+
+    it('rejects Steuer-ID with leading zero', () => {
+      const matches = detectTier2('Number: 02345678901');
+      expect(matches.every(m => m.entity_type !== 'DE_STEUER_ID')).toBe(true);
+    });
+
+    it('regex requires exactly 11 digits', () => {
+      // 10 digits — too short
+      const short = detectTier2('Num: 5678901234');
+      expect(short.every(m => m.entity_type !== 'DE_STEUER_ID')).toBe(true);
+    });
+  });
+
+  describe('SWIFT_BIC detection (§A76)', () => {
+    it('detects 11-char SWIFT/BIC code', () => {
+      const matches = detectTier2('SWIFT: DEUTDEFF500');
+      expect(matches.some(m => m.entity_type === 'SWIFT_BIC')).toBe(true);
+    });
+
+    it('detects 8-char SWIFT/BIC with digit', () => {
+      const matches = detectTier2('BIC: DEUTDE2H');
+      expect(matches.some(m => m.entity_type === 'SWIFT_BIC')).toBe(true);
+    });
+
+    it('rejects 8-char all-alpha (false positive guard)', () => {
+      // 8 pure letters could be a common English word — require at least one digit
+      const matches = detectTier2('Word: ABCDEFGH');
+      expect(matches.every(m => m.entity_type !== 'SWIFT_BIC')).toBe(true);
+    });
+  });
+
+  describe('IN_PASSPORT detection (§A76)', () => {
+    it('detects Indian passport number', () => {
+      const matches = detectTier2('Passport: A1234567');
+      expect(matches.some(m => m.entity_type === 'IN_PASSPORT')).toBe(true);
+    });
+
+    it('has low base score (many false positives)', () => {
+      const matches = detectTier2('Code: B9876543');
+      const passport = matches.find(m => m.entity_type === 'IN_PASSPORT');
+      if (passport) {
+        expect(passport.score).toBeLessThanOrEqual(0.30);
+      }
+    });
+  });
 });

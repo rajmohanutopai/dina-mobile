@@ -14,6 +14,7 @@ import {
   isDeviceActive,
   touchDevice,
   deviceCount,
+  getDeviceByDID,
   resetDeviceRegistry,
 } from '../../src/devices/registry';
 
@@ -156,6 +157,62 @@ describe('Device Registry', () => {
       registerDevice('A', 'z6MkA', 'rich');
       registerDevice('B', 'z6MkB', 'thin');
       expect(deviceCount()).toBe(2);
+    });
+  });
+
+  describe('DID field + getDeviceByDID', () => {
+    it('registered device has a DID', () => {
+      const device = registerDevice('Phone', 'z6MkPhone1', 'rich');
+      expect(device.did).toBeTruthy();
+      expect(device.did).toContain('did:key:');
+    });
+
+    it('getDeviceByDID returns device', () => {
+      const device = registerDevice('Phone', 'z6MkPhoneX', 'rich');
+      const found = getDeviceByDID(device.did);
+      expect(found).not.toBeNull();
+      expect(found!.deviceId).toBe(device.deviceId);
+      expect(found!.deviceName).toBe('Phone');
+    });
+
+    it('getDeviceByDID returns null for unknown DID', () => {
+      expect(getDeviceByDID('did:key:z6MkUnknown')).toBeNull();
+    });
+
+    it('DID is derived from public key (deterministic)', () => {
+      const d1 = registerDevice('A', 'z6MkSameKey', 'rich');
+      // Can't register same key twice, but DID should be consistent
+      expect(d1.did).toContain('z6MkSameKey');
+    });
+
+    it('different keys produce different DIDs', () => {
+      const d1 = registerDevice('A', 'z6MkKeyAlpha', 'rich');
+      const d2 = registerDevice('B', 'z6MkKeyBeta', 'thin');
+      expect(d1.did).not.toBe(d2.did);
+    });
+  });
+
+  describe('authType field', () => {
+    it('registered device has authType "ed25519"', () => {
+      const device = registerDevice('Phone', 'z6MkAuth1', 'rich');
+      expect(device.authType).toBe('ed25519');
+    });
+  });
+
+  describe('ErrDeviceRevoked (double-revocation)', () => {
+    it('throws on double-revocation', () => {
+      const device = registerDevice('Phone', 'z6MkRevoke2', 'rich');
+      revokeDevice(device.deviceId);
+      expect(() => revokeDevice(device.deviceId)).toThrow('already revoked');
+    });
+
+    it('first revocation succeeds', () => {
+      const device = registerDevice('Phone', 'z6MkRevoke3', 'rich');
+      expect(revokeDevice(device.deviceId)).toBe(true);
+    });
+
+    it('returns false for unknown device (not an error)', () => {
+      expect(revokeDevice('dev-nonexistent')).toBe(false);
     });
   });
 });

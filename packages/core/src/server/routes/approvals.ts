@@ -11,20 +11,17 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { ApprovalManager } from '../../approval/manager';
-
-/** Shared approval manager instance. */
-let manager = new ApprovalManager();
-
-/** Get the approval manager (for testing). */
-export function getApprovalManager(): ApprovalManager {
-  return manager;
-}
+import {
+  getApprovalManager, resetApprovalManager,
+} from '../../approval/manager';
 
 /** Reset approval state (for testing). */
 export function resetApprovalState(): void {
-  manager = new ApprovalManager();
+  resetApprovalManager();
 }
+
+/** Convenience accessor — returns the shared singleton. */
+export { getApprovalManager } from '../../approval/manager';
 
 const VALID_SCOPES = new Set(['single', 'session']);
 
@@ -33,7 +30,7 @@ export function createApprovalsRouter(): Router {
 
   // GET /v1/approvals — list pending
   router.get('/v1/approvals', (_req: Request, res: Response) => {
-    const pending = manager.listPending();
+    const pending = getApprovalManager().listPending();
     res.json({
       approvals: pending.map(a => ({
         id: a.id, action: a.action, requester_did: a.requester_did,
@@ -59,7 +56,7 @@ export function createApprovalsRouter(): Router {
       if (!action) { res.status(400).json({ error: 'action is required' }); return; }
       if (!requester_did) { res.status(400).json({ error: 'requester_did is required' }); return; }
 
-      manager.requestApproval({
+      getApprovalManager().requestApproval({
         id, action, requester_did, persona, reason, preview,
         created_at: Date.now(),
       });
@@ -74,7 +71,7 @@ export function createApprovalsRouter(): Router {
 
   // GET /v1/approvals/:id — get specific request
   router.get('/v1/approvals/:id', (req: Request, res: Response) => {
-    const approval = manager.getRequest(String(req.params.id));
+    const approval = getApprovalManager().getRequest(String(req.params.id));
     if (!approval) { res.status(404).json({ error: 'Approval request not found' }); return; }
     res.json(approval);
   });
@@ -96,7 +93,7 @@ export function createApprovalsRouter(): Router {
         return;
       }
 
-      manager.approveRequest(id, scope as 'single' | 'session', approved_by);
+      getApprovalManager().approveRequest(id, scope as 'single' | 'session', approved_by);
       res.json({ id, status: 'approved', scope });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -109,7 +106,7 @@ export function createApprovalsRouter(): Router {
   router.post('/v1/approvals/:id/deny', (req: Request, res: Response) => {
     try {
       const id = String(req.params.id);
-      manager.denyRequest(id);
+      getApprovalManager().denyRequest(id);
       res.json({ id, status: 'denied' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

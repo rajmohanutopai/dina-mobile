@@ -14,7 +14,7 @@ import { storeItem, getItem, queryVault, clearVaults } from '../../src/vault/cru
 import { createPersona, listPersonas, resetPersonaState } from '../../src/persona/service';
 import { initializeRotation, getCurrentPublicKey, signWithCurrentKey, verifyWithAnyKey, resetRotationState } from '../../src/identity/rotation';
 import { deriveRootSigningKey } from '../../src/crypto/slip0010';
-import { mnemonicToSeed, validateMnemonic } from '../../src/crypto/bip39';
+import { mnemonicToEntropy, validateMnemonic } from '../../src/crypto/bip39';
 import { deriveDIDKey } from '../../src/identity/did';
 import { makeVaultItem, resetFactoryCounters, TEST_PASSPHRASE } from '@dina/test-harness';
 
@@ -37,8 +37,8 @@ describe('Cross-Device Migration (Task 9.6)', () => {
       const mnemonicStr = deviceA.mnemonic.join(' ');
       expect(validateMnemonic(mnemonicStr)).toBe(true);
 
-      // Re-derive from same mnemonic → same seed → same DID
-      const seed = mnemonicToSeed(mnemonicStr);
+      // Re-derive from same mnemonic → same 32-byte entropy → same DID
+      const seed = mnemonicToEntropy(mnemonicStr);
       const rootKey = deriveRootSigningKey(seed, 0);
       const restoredDID = deriveDIDKey(rootKey.publicKey);
 
@@ -48,7 +48,7 @@ describe('Cross-Device Migration (Task 9.6)', () => {
     it('signatures from Device A verify on Device B', async () => {
       // === Device A: Initialize keys + sign ===
       const deviceA = await runOnboarding(TEST_PASSPHRASE);
-      const seed = mnemonicToSeed(deviceA.mnemonic.join(' '));
+      const seed = mnemonicToEntropy(deviceA.mnemonic.join(' '));
 
       initializeRotation(seed);
       const data = new TextEncoder().encode('Migration test document');
@@ -114,11 +114,11 @@ describe('Cross-Device Migration (Task 9.6)', () => {
   describe('crypto determinism across devices', () => {
     it('same seed → same signing key', async () => {
       const deviceA = await runOnboarding(TEST_PASSPHRASE);
-      const seedA = mnemonicToSeed(deviceA.mnemonic.join(' '));
+      const seedA = mnemonicToEntropy(deviceA.mnemonic.join(' '));
       const keyA = deriveRootSigningKey(seedA, 0);
 
       // Re-derive on "Device B"
-      const seedB = mnemonicToSeed(deviceA.mnemonic.join(' '));
+      const seedB = mnemonicToEntropy(deviceA.mnemonic.join(' '));
       const keyB = deriveRootSigningKey(seedB, 0);
 
       expect(Buffer.from(keyA.publicKey)).toEqual(Buffer.from(keyB.publicKey));
@@ -126,7 +126,7 @@ describe('Cross-Device Migration (Task 9.6)', () => {
 
     it('key rotation generation N matches across devices', async () => {
       const deviceA = await runOnboarding(TEST_PASSPHRASE);
-      const seed = mnemonicToSeed(deviceA.mnemonic.join(' '));
+      const seed = mnemonicToEntropy(deviceA.mnemonic.join(' '));
 
       // Device A at generation 3
       const keyA_gen3 = deriveRootSigningKey(seed, 3);

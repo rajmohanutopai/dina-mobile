@@ -145,6 +145,71 @@ describe('ClaudeAdapter', () => {
       expect(createFn.mock.calls[0][0].model).toBe('claude-opus-4-6');
     });
 
+    it('uses prefilled assistant message for structured output', async () => {
+      // Claude returns JSON without the leading '{' since we prefilled it
+      const jsonResponse: AnthropicMessageResponse = {
+        id: 'msg_json',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: '"persona": "health", "confidence": 0.9, "reason": "Medical content"}' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 15, output_tokens: 20 },
+      };
+      const client = createMockClient(jsonResponse);
+      const adapter = new ClaudeAdapter(client);
+
+      const result = await adapter.chat(
+        [{ role: 'user', content: 'Classify this medical report' }],
+        {
+          responseSchema: {
+            type: 'object',
+            properties: { persona: { type: 'string' } },
+          },
+        },
+      );
+
+      // Should prepend '{' back to form valid JSON
+      expect(result.content.charAt(0)).toBe('{');
+      // Verify the API was called with prefilled assistant message
+      const createFn = client.messages.create as jest.Mock;
+      const params = createFn.mock.calls[0][0];
+      const lastMsg = params.messages[params.messages.length - 1];
+      expect(lastMsg.role).toBe('assistant');
+      expect(lastMsg.content).toBe('{');
+    });
+
+    it('does NOT prefill when no responseSchema provided', async () => {
+      const client = createMockClient(TEXT_RESPONSE);
+      const adapter = new ClaudeAdapter(client);
+
+      await adapter.chat([{ role: 'user', content: 'Hello' }]);
+
+      const createFn = client.messages.create as jest.Mock;
+      const params = createFn.mock.calls[0][0];
+      // No assistant prefill message
+      expect(params.messages.every((m: { role: string }) => m.role !== 'assistant')).toBe(true);
+    });
+
+    it('does NOT double-prepend { when response already starts with {', async () => {
+      const jsonResponse: AnthropicMessageResponse = {
+        id: 'msg_json2',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: '{"persona": "health"}' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 10 },
+      };
+      const client = createMockClient(jsonResponse);
+      const adapter = new ClaudeAdapter(client);
+
+      const result = await adapter.chat(
+        [{ role: 'user', content: 'Classify' }],
+        { responseSchema: { type: 'object' } },
+      );
+
+      // Should NOT have '{{' at start
+      expect(result.content.startsWith('{{')).toBe(false);
+      expect(result.content.charAt(0)).toBe('{');
+    });
+
     it('maps max_tokens stop reason', async () => {
       const response: AnthropicMessageResponse = {
         ...TEXT_RESPONSE,

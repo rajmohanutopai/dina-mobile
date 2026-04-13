@@ -24,6 +24,7 @@ import type {
 } from './provider';
 
 import { OPENROUTER_BASE_URL as OR_BASE, DEFAULT_OPENROUTER_MODEL, OPENROUTER_APP_NAME, OPENROUTER_APP_URL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+import { safeCall } from './safety';
 
 const OPENROUTER_BASE_URL = OR_BASE;
 const DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL;
@@ -100,6 +101,9 @@ export class OpenRouterAdapter implements LLMProvider {
       messages: apiMessages,
       max_tokens: maxTokens,
       temperature: options?.temperature,
+      // Structured JSON output: OpenRouter uses the OpenAI-compatible response_format.
+      // When a responseSchema is provided, request guaranteed JSON output.
+      ...(options?.responseSchema ? { response_format: { type: 'json_object' } } : {}),
     };
 
     if (options?.tools && options.tools.length > 0) {
@@ -113,7 +117,7 @@ export class OpenRouterAdapter implements LLMProvider {
       }));
     }
 
-    const response = await this.fetchFn(`${this.baseURL}/chat/completions`, {
+    const response = await safeCall(() => this.fetchFn(`${this.baseURL}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.apiKey}`,
@@ -123,7 +127,7 @@ export class OpenRouterAdapter implements LLMProvider {
       },
       body: JSON.stringify(body),
       signal: options?.signal,
-    });
+    }));
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -167,6 +171,7 @@ function mapResponse(data: OpenRouterResponse): ChatResponse {
 
   const content = choice.message.content ?? '';
   const toolCalls: ToolCall[] = (choice.message.tool_calls ?? []).map(tc => ({
+    id: tc.id,
     name: tc.function.name,
     arguments: safeParseJSON(tc.function.arguments),
   }));

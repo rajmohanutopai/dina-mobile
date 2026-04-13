@@ -13,7 +13,7 @@
  * Source: core/test/onboarding_test.go (portable parts)
  */
 
-import { generateMnemonic, mnemonicToSeed } from '../crypto/bip39';
+import { generateMnemonic, mnemonicToEntropy } from '../crypto/bip39';
 import { deriveRootSigningKey } from '../crypto/slip0010';
 import { deriveDIDKey } from '../identity/did';
 import { wrapSeed } from '../crypto/aesgcm';
@@ -30,7 +30,7 @@ export interface OnboardingResult {
  * Run the portable onboarding sequence.
  *
  * 1. Generate 24-word BIP-39 mnemonic
- * 2. Derive 64-byte seed via PBKDF2
+ * 2. Extract 32-byte entropy from mnemonic (Go-compatible master seed)
  * 3. Derive root signing key via SLIP-0010 (m/9999'/0'/0')
  * 4. Derive did:key from root public key
  * 5. Wrap master seed with passphrase (Argon2id + AES-256-GCM)
@@ -44,8 +44,8 @@ export async function runOnboarding(passphrase: string): Promise<OnboardingResul
   const mnemonicString = generateMnemonic();
   const mnemonic = mnemonicString.split(' ');
 
-  // 2. Derive master seed
-  const masterSeed = mnemonicToSeed(mnemonicString);
+  // 2. Extract 32-byte entropy (Go-compatible — same mnemonic → same seed → same DID)
+  const masterSeed = mnemonicToEntropy(mnemonicString);
 
   // 3. Derive root signing key at m/9999'/0'/0'
   const rootKey = deriveRootSigningKey(masterSeed, 0);

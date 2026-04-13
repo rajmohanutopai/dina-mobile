@@ -59,22 +59,83 @@ export function corruptCache(): void {
   cacheCorrupted = true;
 }
 
+/** Page size for paginated sync (matching Go's default). */
+export const SYNC_PAGE_SIZE = 100;
+
+/** Maximum items per batch ingest (matching Python MCP validation). */
+export const MAX_BATCH_ITEMS = 1000;
+
+/** Maximum item payload size in bytes (256KB, matching Python MCP validation). */
+export const MAX_ITEM_SIZE_BYTES = 256 * 1024;
+
 /**
- * Sync from home node at a checkpoint.
+ * Sync from home node at a checkpoint with pagination.
  *
- * Returns all items with checkpoint > given value, plus the new
- * highest checkpoint for the client to store.
+ * Returns up to SYNC_PAGE_SIZE items with checkpoint > given value,
+ * the new highest checkpoint, and a hasMore flag indicating whether
+ * more items are available beyond the current page.
+ *
+ * Pagination (matching Go): clients call repeatedly with the returned
+ * newCheckpoint until hasMore is false.
  * Checkpoint 0 = initial full sync.
  */
 export async function syncFromCheckpoint(
   checkpoint: number,
-): Promise<{ items: unknown[]; newCheckpoint: number }> {
-  const items = syncStore.filter(item => item.checkpoint > checkpoint);
-  const newCheckpoint = items.length > 0
-    ? Math.max(...items.map(i => i.checkpoint))
+  pageSize?: number,
+): Promise<{ items: unknown[]; newCheckpoint: number; hasMore: boolean }> {
+  const limit = Math.min(pageSize ?? SYNC_PAGE_SIZE, SYNC_PAGE_SIZE);
+
+  // Get all items past the checkpoint, sorted by checkpoint ascending
+  const allMatching = syncStore
+    .filter(item => item.checkpoint > checkpoint)
+    .sort((a, b) => a.checkpoint - b.checkpoint);
+
+  const page = allMatching.slice(0, limit);
+  const hasMore = allMatching.length > limit;
+
+  const newCheckpoint = page.length > 0
+    ? Math.max(...page.map(i => i.checkpoint))
     : checkpoint;
 
-  return { items, newCheckpoint };
+  return { items: page, newCheckpoint, hasMore };
+}
+
+/**
+ * Validate a sync item payload size.
+ *
+ * Rejects items larger than MAX_ITEM_SIZE_BYTES (256KB).
+ * Matching Python's MCP payload validation.
+ *
+ * @returns null if valid, or error message
+ */
+export function validateSyncItemSize(item: SyncItem): string | null {
+  const serialized = JSON.stringify(item.data);
+  // Use TextEncoder for accurate UTF-8 byte length (Fix: Codex #16)
+  const byteLength = new TextEncoder().encode(serialized).length;
+  if (byteLength > MAX_ITEM_SIZE_BYTES) {
+    return `Item "${item.id}" exceeds max size: ${byteLength} bytes > ${MAX_ITEM_SIZE_BYTES} bytes`;
+  }
+  return null;
+}
+
+/**
+ * Validate a batch of sync items.
+ *
+ * Checks:
+ * - Batch size ≤ MAX_BATCH_ITEMS (1000)
+ * - Each item ≤ MAX_ITEM_SIZE_BYTES (256KB)
+ *
+ * @returns null if valid, or error message
+ */
+export function validateSyncBatch(items: SyncItem[]): string | null {
+  if (items.length > MAX_BATCH_ITEMS) {
+    return `Batch too large: ${items.length} items > ${MAX_BATCH_ITEMS} max`;
+  }
+  for (const item of items) {
+    const err = validateSyncItemSize(item);
+    if (err) return err;
+  }
+  return null;
 }
 
 /**

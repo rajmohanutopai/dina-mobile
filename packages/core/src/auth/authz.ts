@@ -67,8 +67,9 @@ const AUTHZ_RULES: Array<{ prefix: string; allowed: Set<CallerType> }> = [
   // Contacts — Admin + Brain
   { prefix: '/v1/contacts',          allowed: new Set(['admin', 'brain']) },
 
-  // Reminders — Admin + Brain + Device
+  // Reminders — Admin + Brain + Device (both singular and plural paths)
   { prefix: '/v1/reminder',          allowed: new Set(['admin', 'brain', 'device']) },
+  { prefix: '/v1/reminders',         allowed: new Set(['admin', 'brain', 'device']) },
 
   // Notify — Brain
   { prefix: '/v1/notify',            allowed: new Set(['brain']) },
@@ -85,7 +86,30 @@ const AUTHZ_RULES: Array<{ prefix: string; allowed: Set<CallerType> }> = [
 ];
 
 /**
+ * Check if a path matches a prefix with boundary safety.
+ *
+ * Matches Go's `hasPathPrefix`: the path must either equal the prefix
+ * exactly, or the character at the prefix boundary must be '/'.
+ * This prevents `/v1/vault/storefoo` from matching `/v1/vault/store`.
+ *
+ * Source: Go core/internal/middleware/auth.go hasPathPrefix()
+ */
+function hasPathPrefix(path: string, prefix: string): boolean {
+  if (!path.startsWith(prefix)) return false;
+  // Exact match
+  if (path.length === prefix.length) return true;
+  // Prefix already ends with '/' — any continuation is fine
+  if (prefix.endsWith('/')) return true;
+  // Character at boundary must be '/'
+  return path[prefix.length] === '/';
+}
+
+/**
  * Check if a caller type is authorized for an endpoint.
+ *
+ * Uses boundary-safe prefix matching to prevent `/v1/vault/storefoo`
+ * from matching the `/v1/vault/store` rule. The path must either
+ * equal the prefix exactly or continue with a `/` separator.
  *
  * @param callerType - The authenticated caller's type
  * @param method - HTTP method (unused currently — all methods share the same rule per path)
@@ -94,7 +118,7 @@ const AUTHZ_RULES: Array<{ prefix: string; allowed: Set<CallerType> }> = [
  */
 export function isAuthorized(callerType: CallerType, method: string, path: string): boolean {
   for (const rule of AUTHZ_RULES) {
-    if (path.startsWith(rule.prefix)) {
+    if (hasPathPrefix(path, rule.prefix)) {
       return rule.allowed.has(callerType);
     }
   }

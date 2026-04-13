@@ -129,6 +129,120 @@ export async function verifyArchive(archive: Uint8Array, passphrase: string): Pr
 }
 
 // ---------------------------------------------------------------
+// Path traversal protection (matching Go's 4-layer defense)
+// ---------------------------------------------------------------
+
+/**
+ * Validate that a file path is safe for archive import/export.
+ *
+ * 4-layer defense matching Go's portability.go:
+ *   1. No path separator characters (/ or \)
+ *   2. No parent directory traversal (..)
+ *   3. No absolute paths (starting with /)
+ *   4. No null bytes (C-string terminator attack)
+ *
+ * @returns null if safe, or error message describing the violation
+ */
+export function validatePath(path: string): string | null {
+  if (!path || path.length === 0) {
+    return 'path is empty';
+  }
+
+  // Layer 1: no directory separators in filename
+  if (path.includes('/') || path.includes('\\')) {
+    return `path traversal: directory separator in "${path}"`;
+  }
+
+  // Layer 2: no parent directory traversal
+  if (path.includes('..')) {
+    return `path traversal: parent directory reference in "${path}"`;
+  }
+
+  // Layer 3: no absolute paths
+  if (path.startsWith('/') || /^[A-Z]:/i.test(path)) {
+    return `path traversal: absolute path "${path}"`;
+  }
+
+  // Layer 4: no null bytes
+  if (path.includes('\0')) {
+    return `path traversal: null byte in "${path}"`;
+  }
+
+  return null;
+}
+
+/**
+ * Check if a path is safe for archive operations.
+ * Convenience wrapper around validatePath.
+ */
+export function isPathSafe(path: string): boolean {
+  return validatePath(path) === null;
+}
+
+// ---------------------------------------------------------------
+// Archive inspection utilities
+// ---------------------------------------------------------------
+
+/**
+ * Check archive compatibility without decrypting.
+ *
+ * Validates magic header and version only — no passphrase required.
+ * Returns { compatible, version, reason } for quick format checks.
+ *
+ * Matching Go's CheckCompatibility header-only check.
+ */
+export function checkCompatibility(archive: Uint8Array): {
+  compatible: boolean;
+  version: number;
+  reason?: string;
+} {
+  if (archive.length < 6) {
+    return { compatible: false, version: 0, reason: 'Archive too short' };
+  }
+
+  // Check DINA magic bytes
+  if (archive[0] !== 0x44 || archive[1] !== 0x49 ||
+      archive[2] !== 0x4E || archive[3] !== 0x41) {
+    return { compatible: false, version: 0, reason: 'Invalid magic header (not a .dina archive)' };
+  }
+
+  const version = archive[4];
+  if (version !== ARCHIVE_VERSION) {
+    return {
+      compatible: false,
+      version,
+      reason: `Unsupported version ${version} (expected ${ARCHIVE_VERSION})`,
+    };
+  }
+
+  return { compatible: true, version };
+}
+
+/**
+ * List the contents of an archive (requires decryption).
+ *
+ * Returns persona names, tiers, sizes, and identity size.
+ * Matching Go's ListArchiveContents.
+ */
+export async function listArchiveContents(
+  archive: Uint8Array,
+  passphrase: string,
+): Promise<{
+  personas: Array<{ name: string; tier: string; size_bytes: number }>;
+  identity_size_bytes: number;
+  total_personas: number;
+  created_at: number;
+}> {
+  const manifest = await readManifest(archive, passphrase);
+  return {
+    personas: manifest.personas,
+    identity_size_bytes: manifest.identity_size_bytes,
+    total_personas: manifest.header.persona_count,
+    created_at: manifest.header.created_at,
+  };
+}
+
+// ---------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------
 

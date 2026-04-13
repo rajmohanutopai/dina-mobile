@@ -10,6 +10,7 @@ import { addContact, setScenarioDeny, clearGatesState } from '../../src/d2d/gate
 import { resetStagingState } from '../../src/staging/service';
 import { resetAuditState, queryAudit } from '../../src/audit/service';
 import { resetQuarantineState, quarantineSize } from '../../src/d2d/quarantine';
+import { clearReplayCache } from '../../src/transport/adversarial';
 import { getPublicKey } from '../../src/crypto/ed25519';
 import { TEST_ED25519_SEED } from '@dina/test-harness';
 
@@ -37,6 +38,7 @@ describe('D2D Receive Pipeline', () => {
     resetStagingState();
     resetAuditState();
     resetQuarantineState();
+    clearReplayCache();
   });
 
   describe('full pipeline success', () => {
@@ -100,8 +102,23 @@ describe('D2D Receive Pipeline', () => {
       expect(result.action).toBe('dropped');
     });
 
-    it('unknown sender → quarantined', () => {
+    it('unknown trust_level → quarantined (not a verified contact)', () => {
+      // Fix: Codex #15 — 'unknown' trust means "not a verified contact" → quarantine.
+      // Only explicit positive trust levels (verified, trusted, contact_ring1, etc.) proceed.
+      addContact('did:plc:sender');
       const result = receiveD2D(buildSealed(), recipientPub, recipientPriv, [senderPub], 'unknown');
+      expect(result.action).toBe('quarantined');
+    });
+
+    it('verified contact → accepted (staged)', () => {
+      addContact('did:plc:sender');
+      const result = receiveD2D(buildSealed(), recipientPub, recipientPriv, [senderPub], 'verified');
+      expect(result.action).toBe('staged');
+    });
+
+    it('non-contact (empty trust) → quarantined', () => {
+      // Sender NOT in contact directory → quarantine. Pass empty string for trust.
+      const result = receiveD2D(buildSealed({ id: 'msg-non-contact' }), recipientPub, recipientPriv, [senderPub], '');
       expect(result.action).toBe('quarantined');
       expect(result.quarantineId).toBeTruthy();
       expect(quarantineSize()).toBe(1);
@@ -139,6 +156,113 @@ describe('D2D Receive Pipeline', () => {
       const payload = buildSealed({ type: 'presence.signal' });
       const result = receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
       expect(result.action).toBe('ephemeral');
+    });
+  });
+
+  describe('replay detection (SEC-HIGH-08)', () => {
+    it('accepts first message, drops second with same ID', () => {
+      addContact('did:plc:sender');
+      const payload1 = buildSealed({ id: 'msg-replay-test' });
+
+      // First delivery — accepted
+      const result1 = receiveD2D(payload1, recipientPub, recipientPriv, [senderPub], 'trusted');
+      expect(result1.action).toBe('staged');
+
+      // Second delivery of same message — rejected as replay
+      const payload2 = buildSealed({ id: 'msg-replay-test' });
+      const result2 = receiveD2D(payload2, recipientPub, recipientPriv, [senderPub], 'trusted');
+      expect(result2.action).toBe('dropped');
+      expect(result2.reason).toContain('Replayed');
+    });
+
+    it('accepts different message IDs from same sender', () => {
+      addContact('did:plc:sender');
+      const p1 = buildSealed({ id: 'msg-a' });
+      const p2 = buildSealed({ id: 'msg-b' });
+
+      expect(receiveD2D(p1, recipientPub, recipientPriv, [senderPub], 'trusted').action).toBe('staged');
+      expect(receiveD2D(p2, recipientPub, recipientPriv, [senderPub], 'trusted').action).toBe('staged');
+    });
+
+    it('accepts same message ID from different senders', () => {
+      addContact('did:plc:sender');
+      addContact('did:plc:other');
+      const p1 = buildSealed({ id: 'msg-shared-id', from: 'did:plc:sender' });
+      const p2 = buildSealed({ id: 'msg-shared-id', from: 'did:plc:other' });
+
+      expect(receiveD2D(p1, recipientPub, recipientPriv, [senderPub], 'trusted').action).toBe('staged');
+      // Different sender → different replay key → accepted (not a replay)
+      expect(receiveD2D(p2, recipientPub, recipientPriv, [senderPub], 'trusted').action).toBe('staged');
+    });
+
+    it('audit logs replay detections', () => {
+      addContact('did:plc:sender');
+      const payload = buildSealed({ id: 'msg-audit-replay' });
+
+      receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+      receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+
+      const logs = queryAudit({ action: 'd2d_recv_replay' });
+      expect(logs.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('V1 type enforcement', () => {
+    it('drops non-V1 message types with audit', () => {
+      addContact('did:plc:sender');
+      const payload = buildSealed({ id: 'msg-v1-reject', type: 'dina/query' });
+      const result = receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+
+      expect(result.action).toBe('dropped');
+      expect(result.reason).toContain('Non-V1');
+      expect(result.signatureValid).toBe(true); // sig was valid, type was not
+
+      const logs = queryAudit({ action: 'd2d_recv_type_rejected' });
+      expect(logs.length).toBeGreaterThan(0);
+    });
+
+    it('accepts valid V1 types', () => {
+      addContact('did:plc:sender');
+      const payload = buildSealed({ id: 'msg-v1-accept', type: 'social.update' });
+      const result = receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+      expect(result.action).toBe('staged');
+    });
+  });
+
+  describe('body size validation', () => {
+    it('accepts normal-sized bodies', () => {
+      addContact('did:plc:sender');
+      const payload = buildSealed({
+        id: 'msg-body-ok',
+        body: 'x'.repeat(1000),
+      });
+      const result = receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+      expect(result.action).toBe('staged');
+    });
+
+    it('drops bodies exceeding 256 KB', () => {
+      addContact('did:plc:sender');
+      // 256 KB + 1 byte
+      const payload = buildSealed({
+        id: 'msg-body-oversized',
+        body: 'x'.repeat(256 * 1024 + 1),
+      });
+      const result = receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+      expect(result.action).toBe('dropped');
+      expect(result.reason).toContain('exceeds maximum size');
+      expect(result.signatureValid).toBe(true);
+    });
+
+    it('audit logs oversized body rejections', () => {
+      addContact('did:plc:sender');
+      const payload = buildSealed({
+        id: 'msg-body-audit',
+        body: 'x'.repeat(256 * 1024 + 1),
+      });
+      receiveD2D(payload, recipientPub, recipientPriv, [senderPub], 'trusted');
+
+      const logs = queryAudit({ action: 'd2d_recv_body_oversized' });
+      expect(logs.length).toBeGreaterThan(0);
     });
   });
 });

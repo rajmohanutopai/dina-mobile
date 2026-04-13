@@ -180,4 +180,55 @@ describe('Entity Vault', () => {
       expect(result).toBe('Text with [EMAIL_1]'); // no mapping left
     });
   });
+
+  describe('two-tier scrubbing (§A14)', () => {
+    it('Tier 1 scrubs emails (core regex)', () => {
+      const vault = new EntityVault();
+      const scrubbed = vault.scrub('Contact alice@example.com');
+      expect(scrubbed).toContain('[EMAIL_1]');
+      expect(scrubbed).not.toContain('alice@example.com');
+    });
+
+    it('Tier 2 detects patterns not covered by Tier 1', () => {
+      const vault = new EntityVault();
+      // SWIFT_BIC (11-char) is only in Tier 2
+      const scrubbed = vault.scrub('BIC code DEUTDEFF500');
+      expect(scrubbed).toContain('[SWIFT_BIC_1]');
+      expect(scrubbed).not.toContain('DEUTDEFF500');
+    });
+
+    it('both tiers contribute entries to the vault', () => {
+      const vault = new EntityVault();
+      // Email (Tier 1) + SWIFT (Tier 2) in same text
+      vault.scrub('Email bob@test.com BIC DEUTDEFF500');
+      expect(vault.size()).toBeGreaterThanOrEqual(2);
+      const entries = vault.entries();
+      const types = new Set(entries.map(e => e.type));
+      expect(types.has('EMAIL')).toBe(true);
+      expect(types.has('SWIFT_BIC')).toBe(true);
+    });
+
+    it('rehydrates both tiers correctly', () => {
+      const vault = new EntityVault();
+      const scrubbed = vault.scrub('Email bob@test.com BIC DEUTDEFF500');
+      expect(scrubbed).not.toContain('bob@test.com');
+      expect(scrubbed).not.toContain('DEUTDEFF500');
+
+      // Simulate LLM response using the tokens
+      const llmResponse = `Contact [EMAIL_1] about BIC [SWIFT_BIC_1]`;
+      const rehydrated = vault.rehydrate(llmResponse);
+      expect(rehydrated).toContain('bob@test.com');
+      expect(rehydrated).toContain('DEUTDEFF500');
+    });
+
+    it('token numbering is consistent across tiers', () => {
+      const vault = new EntityVault();
+      // Two emails (Tier 1) + one SWIFT (Tier 2)
+      vault.scrub('a@test.com b@test.com BIC DEUTDEFF500');
+      const entries = vault.entries();
+      const emailTokens = entries.filter(e => e.type === 'EMAIL').map(e => e.token);
+      expect(emailTokens).toContain('[EMAIL_1]');
+      expect(emailTokens).toContain('[EMAIL_2]');
+    });
+  });
 });

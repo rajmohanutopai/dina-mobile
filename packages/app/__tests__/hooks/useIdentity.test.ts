@@ -41,7 +41,7 @@ describe('Identity Settings Hook (4.14)', () => {
       expect(info.didDocument['@context']).toContain('https://www.w3.org/ns/did/v1');
       expect(info.didDocument.id).toBe(info.did);
       expect(info.didDocument.verificationMethod).toHaveLength(1);
-      expect(info.didDocument.verificationMethod[0].type).toBe('Ed25519VerificationKey2020');
+      expect(info.didDocument.verificationMethod[0].type).toBe('Multikey');
     });
 
     it('includes messaging endpoint when provided', () => {

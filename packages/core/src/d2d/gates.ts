@@ -40,6 +40,18 @@ const sharingRestrictions = new Map<string, Set<string>>();
 /** Default restricted data categories for contacts without explicit policy. */
 const DEFAULT_RESTRICTED_CATEGORIES = new Set(['health', 'financial', 'medical_record']);
 
+/**
+ * Blocked destination DIDs — always denied, bypasses all gates.
+ * Matching Go's blocked destination list for egress.
+ */
+const blockedDestinations = new Set<string>();
+
+/**
+ * Trusted destination DIDs — bypass tier/scenario checks.
+ * Still logged via audit gate. Matching Go's trusted destination list.
+ */
+const trustedDestinations = new Set<string>();
+
 // ---------------------------------------------------------------
 // Configuration (for testing)
 // ---------------------------------------------------------------
@@ -59,11 +71,45 @@ export function setSharingRestrictions(did: string, restrictedCategories: string
   sharingRestrictions.set(did, new Set(restrictedCategories));
 }
 
+/** Add a DID to the blocked destination list. */
+export function blockDestination(did: string): void {
+  blockedDestinations.add(did);
+  trustedDestinations.delete(did); // can't be both
+}
+
+/** Remove a DID from the blocked destination list. */
+export function unblockDestination(did: string): void {
+  blockedDestinations.delete(did);
+}
+
+/** Add a DID to the trusted destination list. */
+export function trustDestination(did: string): void {
+  trustedDestinations.add(did);
+  blockedDestinations.delete(did); // can't be both
+}
+
+/** Remove a DID from the trusted destination list. */
+export function untrustDestination(did: string): void {
+  trustedDestinations.delete(did);
+}
+
+/** Check if a DID is blocked. */
+export function isDestinationBlocked(did: string): boolean {
+  return blockedDestinations.has(did);
+}
+
+/** Check if a DID is trusted. */
+export function isDestinationTrusted(did: string): boolean {
+  return trustedDestinations.has(did);
+}
+
 /** Clear all gates state (for testing). */
 export function clearGatesState(): void {
   knownContacts.clear();
   scenarioDeny.clear();
   sharingRestrictions.clear();
+  blockedDestinations.clear();
+  trustedDestinations.clear();
 }
 
 // ---------------------------------------------------------------
@@ -82,6 +128,16 @@ export function checkEgressGates(
   messageType: string,
   dataCategories: string[],
 ): EgressCheckResult {
+  // Pre-gate: Blocked destination list — always denied
+  if (isDestinationBlocked(recipientDID)) {
+    return { allowed: false, deniedAt: 'contact', reason: 'Destination is blocked' };
+  }
+
+  // Pre-gate: Trusted destination list — bypass gates 1-3
+  if (isDestinationTrusted(recipientDID)) {
+    return { allowed: true };
+  }
+
   // Gate 1: Contact check
   if (!checkContactGate(recipientDID)) {
     return { allowed: false, deniedAt: 'contact', reason: 'Recipient is not a known contact' };

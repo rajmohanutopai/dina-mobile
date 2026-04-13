@@ -20,6 +20,8 @@ export interface ToolDefinition {
 }
 
 export interface ToolCall {
+  /** Tool call ID for multi-turn correlation (matching Python/Go round-trip). */
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
 }
@@ -79,6 +81,12 @@ export interface ChatOptions {
   tools?: ToolDefinition[];
   systemPrompt?: string;
   signal?: AbortSignal;
+  /**
+   * JSON schema for structured output (Gemini's response_schema).
+   * When set, the response is guaranteed to match this schema.
+   * Ignored by providers that don't support structured output.
+   */
+  responseSchema?: Record<string, unknown>;
 }
 
 export interface EmbedOptions {

@@ -63,7 +63,7 @@ export function runHealthCheck(): HealthReport {
 function checkVaultAccess(): HealthCheck {
   const start = Date.now();
   try {
-    const id = storeItem('_healthcheck', { summary: '_hc_probe', type: 'system' });
+    const id = storeItem('_healthcheck', { summary: '_hc_probe', type: 'note' });
     const item = getItem('_healthcheck', id);
     deleteItem('_healthcheck', id);
 

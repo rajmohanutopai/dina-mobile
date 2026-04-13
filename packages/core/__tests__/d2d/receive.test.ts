@@ -17,7 +17,7 @@ describe('D2D Receive — Stage Memory', () => {
     it('stages social.update from trusted sender as relationship_note', () => {
       const result = receiveAndStage(
         'social.update', 'did:plc:alice', 'trusted',
-        '{"text":"I arrived safely"}', 'msg-001',
+        '{"text":"I arrived safely"}', 'msg-001', true,
       );
       expect(result.action).toBe('staged');
       expect(result.vaultItemType).toBe('relationship_note');
@@ -27,7 +27,7 @@ describe('D2D Receive — Stage Memory', () => {
     it('stages trust.vouch.response as trust_attestation', () => {
       const result = receiveAndStage(
         'trust.vouch.response', 'did:plc:bob', 'verified',
-        '{"rating":85}', 'msg-002',
+        '{"rating":85}', 'msg-002', true,
       );
       expect(result.action).toBe('staged');
       expect(result.vaultItemType).toBe('trust_attestation');
@@ -36,7 +36,7 @@ describe('D2D Receive — Stage Memory', () => {
     it('unknown message type uses original type', () => {
       const result = receiveAndStage(
         'custom.type', 'did:plc:alice', 'trusted',
-        '{"data":"test"}', 'msg-003',
+        '{"data":"test"}', 'msg-003', true,
       );
       expect(result.action).toBe('staged');
       expect(result.vaultItemType).toBe('custom.type');
@@ -59,13 +59,21 @@ describe('D2D Receive — Stage Memory', () => {
       expect(result.action).toBe('dropped');
     });
 
-    it('unknown sender → quarantined', () => {
+    it('non-contact → quarantined', () => {
       const result = receiveAndStage(
         'social.update', 'did:plc:stranger', 'unknown',
-        '{"text":"hello"}', 'msg-006',
+        '{"text":"hello"}', 'msg-006', false,
       );
       expect(result.action).toBe('quarantined');
       expect(result.vaultItemType).toBe('relationship_note');
+    });
+
+    it('contact with trust_level=unknown → ACCEPTED (Go EvaluateIngress)', () => {
+      const result = receiveAndStage(
+        'social.update', 'did:plc:newcontact', 'unknown',
+        '{"text":"hi"}', 'msg-006b', true,
+      );
+      expect(result.action).toBe('staged');
     });
 
     it('safety.alert always passes regardless of trust', () => {
@@ -79,7 +87,7 @@ describe('D2D Receive — Stage Memory', () => {
     it('staged item appears in staging inbox', () => {
       const result = receiveAndStage(
         'social.update', 'did:plc:alice', 'trusted',
-        '{"text":"test"}', 'msg-008',
+        '{"text":"test"}', 'msg-008', true,
       );
       const item = getItem(result.stagingId!);
       expect(item).not.toBeNull();
@@ -89,8 +97,8 @@ describe('D2D Receive — Stage Memory', () => {
     });
 
     it('dedup prevents double-staging', () => {
-      const r1 = receiveAndStage('social.update', 'did:plc:a', 'trusted', '{}', 'msg-dup');
-      const r2 = receiveAndStage('social.update', 'did:plc:a', 'trusted', '{}', 'msg-dup');
+      const r1 = receiveAndStage('social.update', 'did:plc:a', 'trusted', '{}', 'msg-dup', true);
+      const r2 = receiveAndStage('social.update', 'did:plc:a', 'trusted', '{}', 'msg-dup', true);
       expect(r1.stagingId).toBe(r2.stagingId); // same staging ID
     });
   });

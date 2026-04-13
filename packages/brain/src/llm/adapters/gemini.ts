@@ -41,6 +41,7 @@ export interface GeminiRequest {
     maxOutputTokens?: number;
     temperature?: number;
     responseMimeType?: string;
+    responseSchema?: Record<string, unknown>;
   };
   tools?: Array<{
     functionDeclarations: Array<{
@@ -79,6 +80,7 @@ export interface GeminiEmbedResult {
 }
 
 import { DEFAULT_GEMINI_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
+import { safeCall } from './safety';
 
 const DEFAULT_CHAT_MODEL = DEFAULT_GEMINI_MODEL;
 const DEFAULT_EMBED_MODEL = 'embedding-001'; // Gemini-specific, not shared
@@ -125,6 +127,12 @@ export class GeminiAdapter implements LLMProvider {
       generationConfig: {
         maxOutputTokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS,
         temperature: options?.temperature,
+        // Structured JSON output — when a responseSchema is provided, set the
+        // MIME type to application/json so Gemini returns guaranteed-valid JSON.
+        ...(options?.responseSchema ? {
+          responseMimeType: 'application/json',
+          responseSchema: options.responseSchema,
+        } : {}),
       },
     };
 
@@ -138,7 +146,7 @@ export class GeminiAdapter implements LLMProvider {
       }];
     }
 
-    const result = await model.generateContent(request);
+    const result = await safeCall(() => model.generateContent(request));
     return mapGeminiResponse(result, modelName);
   }
 
@@ -160,9 +168,9 @@ export class GeminiAdapter implements LLMProvider {
     const modelName = options?.model ?? this.defaultEmbedModel;
     const model = this.client.getGenerativeModel({ model: modelName });
 
-    const result = await model.embedContent({
+    const result = await safeCall(() => model.embedContent({
       content: { parts: [{ text }] },
-    });
+    }));
 
     if (!result.embedding || !result.embedding.values || result.embedding.values.length === 0) {
       throw new Error('Gemini embedding returned no data');
@@ -190,6 +198,7 @@ function mapGeminiResponse(result: GeminiResult, modelName: string): ChatRespons
         content += part.text;
       } else if (part.functionCall) {
         toolCalls.push({
+          id: `call_${toolCalls.length}`, // Synthetic ID — Gemini doesn't provide one
           name: part.functionCall.name,
           arguments: part.functionCall.args,
         });

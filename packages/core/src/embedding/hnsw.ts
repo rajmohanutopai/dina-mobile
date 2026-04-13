@@ -60,7 +60,11 @@ export class HNSWIndex {
     this.M = config.M ?? DEFAULT_M;
     this.efConstruction = config.efConstruction ?? DEFAULT_EF_CONSTRUCTION;
     this.dimensions = config.dimensions;
-    this.mL = 1 / Math.log(this.M);
+    // Fixed: Go hardcodes mL = 0.25 (not 1/ln(M) ≈ 0.36 for M=16).
+    // Using 0.25 produces the same graph topology as Go — flatter graphs
+    // with fewer layers. The 1/ln(M) formula is the theoretical HNSW paper
+    // value, but Go's 0.25 is the tuned production value.
+    this.mL = 0.25;
   }
 
   /**
@@ -70,10 +74,18 @@ export class HNSWIndex {
     if (vector.length !== this.dimensions) {
       throw new Error(`hnsw: expected ${this.dimensions} dimensions, got ${vector.length}`);
     }
+    // Reject NaN/Inf values — they corrupt cosine distance calculations.
+    // Matches Go's EncodeEmbedding validation.
+    for (let i = 0; i < vector.length; i++) {
+      if (!isFinite(vector[i])) {
+        throw new Error(`hnsw: vector contains NaN or Infinity at index ${i}`);
+      }
+    }
     if (this.nodes.has(id)) {
-      // Update existing vector
-      this.nodes.get(id)!.vector = vector;
-      return;
+      // Update: delete then re-insert to rebuild graph edges for the new
+      // vector position. Just swapping the vector in-place would leave the
+      // node's neighbors pointing to stale positions — a correctness bug.
+      this.remove(id);
     }
 
     const nodeLayer = this.randomLayer();

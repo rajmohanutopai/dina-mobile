@@ -1,9 +1,9 @@
 /**
  * Tier 1 PII detection — regex patterns ported from Go core.
  *
- * Detects: email, phone (US + Indian), credit card (Luhn), SSN,
- * Aadhaar (12-digit Indian ID), PAN (Indian tax ID), IFSC (bank branch),
- * UPI (payment address), IP address (octet 0-255 validation).
+ * Detects: email, phone (US + Indian + international), credit card (Luhn),
+ * bank account (16-digit), SSN, address (US street), Aadhaar (12-digit,
+ * space + dash separators), PAN, IFSC, UPI, IP (octet 0-255 validation).
  *
  * Features:
  * - Overlap removal (prefer longer matches)
@@ -36,28 +36,84 @@ interface PatternDef {
 }
 
 const PATTERNS: PatternDef[] = [
-  // Email — standard RFC-ish pattern
+  // --- Order matters: more specific patterns first ---
+
+  // Credit card with separator format (4x4 groups) — Luhn validated.
+  // Must come before BANK_ACCT to win on 16-digit sequences with CC prefix.
   {
-    type: 'EMAIL',
-    regex: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g,
+    type: 'CREDIT_CARD',
+    regex: /\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{3,4}\b/g,
+    validate: luhnCheck,
   },
-  // Credit card — 13-19 digits, optional separators. Luhn validated.
+  // Credit card — 13-19 continuous digits. Luhn validated.
   {
     type: 'CREDIT_CARD',
     regex: /\b(\d[ \-]?){12,18}\d\b/g,
     validate: luhnCheck,
+  },
+  // Bank account — 16 consecutive digits without a CC prefix (catch-all).
+  // Matches Go: \b\d{16}\b
+  {
+    type: 'BANK_ACCT',
+    regex: /\b\d{16}\b/g,
   },
   // SSN — US Social Security Number: NNN-NN-NNNN
   {
     type: 'SSN',
     regex: /\b\d{3}-\d{2}-\d{4}\b/g,
   },
-  // Aadhaar — 12 digits optionally separated by spaces: NNNN NNNN NNNN
+  // IP address — with octet validation (0-255). Before PHONE to prevent
+  // IP addresses from being matched as phone numbers.
+  {
+    type: 'IP',
+    regex: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
+    validate: (m: string) => {
+      return m.split('.').every(octet => {
+        const n = parseInt(octet, 10);
+        return n >= 0 && n <= 255;
+      });
+    },
+  },
+  // Email — standard RFC-ish pattern
+  {
+    type: 'EMAIL',
+    regex: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g,
+  },
+  // Phone — International: +CC followed by digits and separators.
+  // Matches Go: \+\d{1,3}[\s.-]\d[\d\s.-]{6,12}\d
+  {
+    type: 'PHONE',
+    regex: /\+\d{1,3}[\s.\-]\d[\d\s.\-]{6,12}\d/g,
+  },
+  // Phone — US format: optional +1, area code with optional parens/dots/dashes
+  {
+    type: 'PHONE',
+    regex: /(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b/g,
+    validate: (m: string) => {
+      const digits = m.replace(/\D/g, '');
+      // 10 or 11 digits (with country code)
+      return digits.length === 10 || (digits.length === 11 && digits[0] === '1');
+    },
+  },
+  // Phone — Indian: 10 digits starting with 6-9 (bare, without +91).
+  // Matches Go: \b[6-9]\d{4}[\s-]?\d{5}\b
+  {
+    type: 'PHONE',
+    regex: /\b[6-9]\d{4}[\s\-]?\d{5}\b/g,
+  },
+  // Address — US street address: number + street name + type suffix.
+  // Matches Go: \d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Street|...)
+  {
+    type: 'ADDRESS',
+    regex: /\d+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Place|Pl|Court|Ct)\b/g,
+  },
+  // Aadhaar — 12 digits optionally separated by spaces or dashes: NNNN NNNN NNNN
+  // Fixed: now accepts dash separators (matching Go: \d{4}[\s-]?\d{4}[\s-]?\d{4})
   {
     type: 'AADHAAR',
-    regex: /\b\d{4}\s?\d{4}\s?\d{4}\b/g,
+    regex: /\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g,
     validate: (m: string) => {
-      const digits = m.replace(/\s/g, '');
+      const digits = m.replace(/[\s\-]/g, '');
       // Aadhaar is exactly 12 digits, doesn't start with 0 or 1
       return digits.length === 12 && digits[0] !== '0' && digits[0] !== '1';
     },
@@ -80,27 +136,6 @@ const PATTERNS: PatternDef[] = [
     validate: (m: string) => {
       const domain = m.split('@')[1];
       return !domain.includes('.');
-    },
-  },
-  // Phone — US format: optional +1, area code with optional parens/dots/dashes
-  {
-    type: 'PHONE',
-    regex: /(?:\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b/g,
-    validate: (m: string) => {
-      const digits = m.replace(/\D/g, '');
-      // 10 or 11 digits (with country code)
-      return digits.length === 10 || (digits.length === 11 && digits[0] === '1');
-    },
-  },
-  // IP address — with octet validation (0-255)
-  {
-    type: 'IP',
-    regex: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
-    validate: (m: string) => {
-      return m.split('.').every(octet => {
-        const n = parseInt(octet, 10);
-        return n >= 0 && n <= 255;
-      });
     },
   },
 ];
@@ -174,11 +209,20 @@ export function scrubPII(text: string): ScrubResult {
 
 /**
  * Rehydrate scrubbed text — restore original PII values from tokens.
+ *
+ * Uses replaceAll to handle cases where the LLM repeats a token
+ * (e.g. [EMAIL_1] appears twice in the response). String.replace()
+ * only replaces the first occurrence — this was a correctness bug.
  */
 export function rehydratePII(scrubbed: string, entities: Array<{ token: string; value: string }>): string {
+  // Sort by token length descending to prevent partial matches
+  // (e.g. [EMAIL_10] should be replaced before [EMAIL_1])
+  const sorted = [...entities].sort((a, b) => b.token.length - a.token.length);
+
   let result = scrubbed;
-  for (const entity of entities) {
-    result = result.replace(entity.token, entity.value);
+  for (const entity of sorted) {
+    // replaceAll replaces every occurrence, not just the first
+    result = result.replaceAll(entity.token, entity.value);
   }
   return result;
 }

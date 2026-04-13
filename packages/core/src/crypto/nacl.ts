@@ -4,7 +4,7 @@
  * Used for D2D message encryption (anonymous sender, authenticated recipient).
  *
  * Sealed box protocol (libsodium-compatible):
- *   seal:   eph_pk || crypto_box(m, blake2b(eph_pk||pk, 24), pk, eph_sk)
+ *   seal:   eph_pk || crypto_box(m, sha512(eph_pk||pk)[:24], pk, eph_sk)
  *   unseal: extract eph_pk, recompute nonce, crypto_box_open(ct, nonce, eph_pk, sk)
  *
  * Uses @noble ecosystem exclusively:
@@ -19,7 +19,6 @@
 import { x25519, ed25519 } from '@noble/curves/ed25519.js';
 import { xsalsa20poly1305, hsalsa } from '@noble/ciphers/salsa.js';
 import { randomBytes } from '@noble/ciphers/utils.js';
-import { blake2b } from '@noble/hashes/blake2.js';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { NACL_EPHEMERAL_KEY_BYTES, NACL_TAG_BYTES, ED25519_PUBLIC_KEY_BYTES } from '../constants';
@@ -50,13 +49,19 @@ function cryptoBoxBeforenm(sharedSecret: Uint8Array): Uint8Array {
 }
 
 /**
- * Derive the sealed box nonce: BLAKE2b(eph_pub || recipient_pub, outlen=24).
+ * Derive the sealed box nonce: SHA-512(eph_pub || recipient_pub) truncated to 24 bytes.
+ *
+ * Matches Go's custom Dina nonce derivation (NOT libsodium's BLAKE2b).
+ * Go: SHA-512(ephPub||recipientPub)[:24]
+ * libsodium standard: BLAKE2b(ephPub||recipientPub, outlen=24)
+ *
+ * Using SHA-512 ensures D2D messages between Go and TypeScript interoperate.
  */
 function sealNonce(ephPub: Uint8Array, recipientPub: Uint8Array): Uint8Array {
   const data = new Uint8Array(64);
   data.set(ephPub, 0);
   data.set(recipientPub, 32);
-  return blake2b(data, { dkLen: 24 });
+  return sha512(data).slice(0, 24);
 }
 
 /**

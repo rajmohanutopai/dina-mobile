@@ -115,9 +115,9 @@ describe('did:key Format', () => {
       expect(doc.verificationMethod).toHaveLength(1);
     });
 
-    it('verification method type is Ed25519VerificationKey2020', () => {
+    it('verification method type is Multikey (matching Go)', () => {
       const doc = buildDIDDocument(did, multibase);
-      expect(doc.verificationMethod[0].type).toBe('Ed25519VerificationKey2020');
+      expect(doc.verificationMethod[0].type).toBe('Multikey');
     });
 
     it('verification method controller is the DID', () => {
@@ -130,9 +130,9 @@ describe('did:key Format', () => {
       expect(doc.authentication[0]).toBe(doc.verificationMethod[0].id);
     });
 
-    it('assertionMethod references verification method', () => {
+    it('verification method type is Multikey (matching Go)', () => {
       const doc = buildDIDDocument(did, multibase);
-      expect(doc.assertionMethod[0]).toBe(doc.verificationMethod[0].id);
+      expect(doc.verificationMethod[0].type).toBe('Multikey');
     });
 
     it('publicKeyMultibase starts with z', () => {

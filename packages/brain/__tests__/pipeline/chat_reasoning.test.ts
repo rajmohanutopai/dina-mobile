@@ -71,7 +71,7 @@ describe('Chat Reasoning Pipeline', () => {
   });
 
   describe('PII scrubbing (cloud gate)', () => {
-    it('non-sensitive persona + cloud → no scrub', async () => {
+    it('non-sensitive persona + cloud → STILL scrubbed (cloud-wide policy)', async () => {
       storeItem('general', makeVaultItem({ summary: 'General note', body: '' }));
       registerReasoningLLM(async () => 'Answer.');
       const result = await reason({
@@ -79,7 +79,7 @@ describe('Chat Reasoning Pipeline', () => {
         persona: 'general',
         provider: 'claude',
       });
-      expect(result.scrubbed).toBe(false);
+      expect(result.scrubbed).toBe(true); // cloud-wide scrub policy
     });
 
     it('sensitive persona + cloud → scrubbed', async () => {
@@ -106,6 +106,35 @@ describe('Chat Reasoning Pipeline', () => {
         provider: 'local',
       });
       expect(result.scrubbed).toBe(false);
+    });
+
+    it('cloud gate rejection → context-only answer with density', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Vault data about meeting', body: '' }));
+
+      // Mock EntityVault.scrub to throw, forcing gate.allowed=false
+      const EntityVault = require('../../src/pii/entity_vault').EntityVault;
+      const origScrub = EntityVault.prototype.scrub;
+      EntityVault.prototype.scrub = () => { throw new Error('scrub failure'); };
+
+      registerReasoningLLM(async () => 'LLM should NOT be called');
+      const mockLLM = jest.fn();
+
+      const result = await reason({
+        query: 'meeting',
+        persona: 'general',
+        provider: 'claude', // cloud provider → triggers scrub → scrub fails → gate rejected
+      });
+
+      // Should get context-only answer (no LLM call)
+      expect(result.scrubbed).toBe(false);
+      expect(result.model).toBeNull();
+      expect(result.densityTier).toBeDefined();
+      expect(result.vaultContextUsed).toBeGreaterThanOrEqual(0);
+      // Answer should still contain something (context-only)
+      expect(result.answer.length).toBeGreaterThan(0);
+
+      // Restore
+      EntityVault.prototype.scrub = origScrub;
     });
   });
 
@@ -162,6 +191,245 @@ describe('Chat Reasoning Pipeline', () => {
         provider: 'none',
       });
       expect(result.persona).toBe('health');
+    });
+
+    it('includes model and vaultContextUsed metadata', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Meeting data', body: '' }));
+      registerReasoningLLM(async () => 'Answer.');
+      const result = await reason({
+        query: 'meeting',
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(result.model).toBe('local');
+      expect(result.vaultContextUsed).toBeGreaterThanOrEqual(1);
+    });
+
+    it('model is null when no LLM used', async () => {
+      const result = await reason({
+        query: 'test',
+        persona: 'general',
+        provider: 'none',
+      });
+      expect(result.model).toBeNull();
+    });
+
+    it('densityTier is always present (never undefined)', async () => {
+      // Empty vault, no LLM
+      const r1 = await reason({ query: 'test', persona: 'general', provider: 'none' });
+      expect(r1.densityTier).toBeDefined();
+      expect(typeof r1.densityTier).toBe('string');
+    });
+  });
+
+  describe('Anti-Her pre-screening (Law 4)', () => {
+    it('redirects companionship-seeking messages', async () => {
+      const result = await reason({
+        query: "You're the only one who understands me",
+        persona: 'general',
+        provider: 'local',
+        contactSuggestions: ['Alice', 'Bob'],
+      });
+      expect(result.antiHerRedirect).toBe(true);
+      expect(result.antiHerCategory).toBe('companionship_seeking');
+      expect(result.answer).toContain('Alice');
+      expect(result.answer).toContain('Bob');
+    });
+
+    it('redirects therapy-seeking messages', async () => {
+      const result = await reason({
+        query: "I think I'm depressed and can't cope",
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(result.antiHerRedirect).toBe(true);
+      expect(result.antiHerCategory).toBe('therapy_seeking');
+      // Redirect message suggests human connection
+      expect(result.answer).toContain('someone you trust');
+    });
+
+    it('passes normal messages through to reasoning', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Meeting notes', body: '' }));
+      registerReasoningLLM(async () => 'The meeting is Thursday.');
+      const result = await reason({
+        query: "When's my next meeting?",
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(result.antiHerRedirect).toBeUndefined();
+      expect(result.answer).toContain('Thursday');
+    });
+
+    it('Anti-Her redirect skips LLM call entirely', async () => {
+      const mockLLM = jest.fn(async () => 'LLM should not be called');
+      registerReasoningLLM(mockLLM);
+      await reason({
+        query: 'I love you, Dina',
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(mockLLM).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('density analysis (trust disclosure)', () => {
+    it('single-item vault adds density caveat', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Only one note', body: '' }));
+      registerReasoningLLM(async () => 'Based on your note, the answer is X.');
+      const result = await reason({
+        query: 'note',
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(result.densityTier).toBe('single');
+      expect(result.answer).toContain('single entry');
+    });
+
+    it('dense vault has no caveat', async () => {
+      for (let i = 0; i < 12; i++) {
+        storeItem('general', makeVaultItem({
+          summary: `project update number ${i}`,
+          body: `project details for update ${i}`,
+        }));
+      }
+      registerReasoningLLM(async () => 'Your project updates are on track.');
+      const result = await reason({
+        query: 'project',
+        persona: 'general',
+        provider: 'local',
+      });
+      expect(result.densityTier).toBe('dense');
+      expect(result.answer).not.toContain('single entry');
+      expect(result.answer).not.toContain('limited data');
+    });
+
+    it('empty vault → zero tier, no caveat in pipeline response', async () => {
+      const result = await reason({
+        query: 'meetings',
+        persona: 'general',
+        provider: 'none',
+      });
+      expect(result.densityTier).toBe('zero');
+      expect(result.model).toBeNull();
+      expect(result.vaultContextUsed).toBe(0);
+    });
+  });
+
+  describe('reasoning trace', () => {
+    it('includes trace in every result', async () => {
+      const result = await reason({
+        query: 'test',
+        persona: 'general',
+        provider: 'none',
+      });
+      expect(result.trace).toBeDefined();
+      expect(result.trace.requestId).toMatch(/^req-/);
+      expect(result.trace.startedAt).toBeGreaterThan(0);
+      expect(result.trace.totalDurationMs).toBeGreaterThanOrEqual(0);
+      expect(Array.isArray(result.trace.steps)).toBe(true);
+    });
+
+    it('trace records anti_her_screen step', async () => {
+      const result = await reason({
+        query: 'Hello',
+        persona: 'general',
+        provider: 'none',
+      });
+      expect(result.trace.steps[0].step).toBe('anti_her_screen');
+    });
+
+    it('full pipeline trace has all major steps', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Test data', body: '' }));
+      registerReasoningLLM(async () => 'The answer is 42.');
+
+      const result = await reason({
+        query: 'test',
+        persona: 'general',
+        provider: 'local',
+      });
+
+      const stepTypes = result.trace.steps.map(s => s.step);
+      expect(stepTypes).toContain('anti_her_screen');
+      expect(stepTypes).toContain('context_assembly');
+      expect(stepTypes).toContain('cloud_gate');
+      expect(stepTypes).toContain('llm_reasoning');
+      expect(stepTypes).toContain('guard_scan');
+      expect(stepTypes).toContain('density_analysis');
+    });
+
+    it('trace stats reflect pipeline execution', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Meeting notes', body: '' }));
+      registerReasoningLLM(async () => 'Your meeting is Thursday.');
+
+      const result = await reason({
+        query: 'meeting',
+        persona: 'general',
+        provider: 'local',
+      });
+
+      expect(result.trace.stats.contextItemCount).toBeGreaterThanOrEqual(1);
+      expect(result.trace.stats.llmCallCount).toBe(1);
+      expect(result.trace.stats.antiHerTriggered).toBe(false);
+    });
+
+    it('anti-her redirect trace shows triggered', async () => {
+      const result = await reason({
+        query: "You're the only one who understands me",
+        persona: 'general',
+        provider: 'local',
+      });
+
+      expect(result.trace.stats.antiHerTriggered).toBe(true);
+      expect(result.trace.steps).toHaveLength(1); // only anti_her_screen
+    });
+
+    it('requestId is consistent across all trace steps', async () => {
+      storeItem('general', makeVaultItem({ summary: 'Data', body: '' }));
+      registerReasoningLLM(async () => 'Answer.');
+
+      const result = await reason({
+        query: 'data',
+        persona: 'general',
+        provider: 'local',
+      });
+
+      // All steps share the same requestId from the trace
+      const requestId = result.trace.requestId;
+      expect(requestId).toMatch(/^req-/);
+
+      // context_assembly step should record the requestId
+      const ctxStep = result.trace.steps.find(s => s.step === 'context_assembly');
+      expect(ctxStep).toBeDefined();
+      expect(ctxStep!.detail.requestId).toBe(requestId);
+    });
+
+    it('binds requestId to BrainCoreClient when provided', async () => {
+      let boundRequestId: string | null = null;
+      const mockClient = {
+        setRequestId: (id: string | null) => { boundRequestId = id; },
+      };
+
+      const result = await reason({
+        query: 'test',
+        persona: 'general',
+        provider: 'none',
+        coreClient: mockClient,
+      });
+
+      // The trace requestId should have been bound to the client
+      expect(boundRequestId).toBe(result.trace.requestId);
+      expect(boundRequestId).toMatch(/^req-/);
+    });
+
+    it('works without coreClient (optional)', async () => {
+      const result = await reason({
+        query: 'test',
+        persona: 'general',
+        provider: 'none',
+      });
+
+      // Should work fine without coreClient — no crash
+      expect(result.trace.requestId).toMatch(/^req-/);
     });
   });
 });

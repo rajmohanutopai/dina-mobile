@@ -85,9 +85,14 @@ describe('Gatekeeper Adversarial', () => {
       expect(result.riskLevel).toBe('MODERATE');
     });
 
-    it('no double-escalation (already HIGH stays HIGH for unknown)', () => {
+    it('money actions BLOCKED for unknown agent (Ring 2+ required)', () => {
       const result = evaluateIntent('purchase', 'did:key:z6MkBot', 'unknown');
-      expect(result.riskLevel).toBe('HIGH'); // unknown only escalates SAFE
+      expect(result.riskLevel).toBe('BLOCKED'); // trust-ring enforcement
+    });
+
+    it('non-money HIGH action stays HIGH for unknown (no double-escalation)', () => {
+      const result = evaluateIntent('bulk_operation', 'did:key:z6MkBot', 'unknown');
+      expect(result.riskLevel).toBe('HIGH'); // unknown only escalates SAFE, not HIGH
     });
   });
 

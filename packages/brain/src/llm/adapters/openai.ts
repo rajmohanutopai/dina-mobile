@@ -42,6 +42,8 @@ export interface OpenAIChatParams {
     function: { name: string; description: string; parameters: Record<string, unknown> };
   }>;
   stream?: boolean;
+  /** Structured output: { type: "json_object" } forces valid JSON responses. */
+  response_format?: { type: 'json_object' | 'text' };
 }
 
 export interface OpenAIChatResponse {
@@ -76,6 +78,7 @@ export interface OpenAIEmbedResponse {
 
 import { DEFAULT_OPENAI_MODEL, DEFAULT_EMBED_MODEL as EMBED_MODEL, DEFAULT_MAX_TOKENS as MAX_TOKENS } from '../../constants';
 import { DEFAULT_EMBEDDING_DIMENSIONS } from '../../../../core/src/constants';
+import { safeCall } from './safety';
 
 const DEFAULT_CHAT_MODEL = DEFAULT_OPENAI_MODEL;
 const DEFAULT_EMBED_MODEL = EMBED_MODEL;
@@ -118,6 +121,9 @@ export class OpenAIAdapter implements LLMProvider {
       messages: apiMessages,
       max_tokens: maxTokens,
       temperature: options?.temperature,
+      // Structured JSON output: when a responseSchema is provided, instruct
+      // OpenAI to return valid JSON (response_format: { type: "json_object" }).
+      ...(options?.responseSchema ? { response_format: { type: 'json_object' as const } } : {}),
     };
 
     if (options?.tools && options.tools.length > 0) {
@@ -131,7 +137,7 @@ export class OpenAIAdapter implements LLMProvider {
       }));
     }
 
-    const response = await this.client.chat.completions.create(params);
+    const response = await safeCall(() => this.client.chat.completions.create(params));
 
     return mapChatResponse(response);
   }
@@ -155,11 +161,11 @@ export class OpenAIAdapter implements LLMProvider {
     const model = options?.model ?? this.defaultEmbedModel;
     const dimensions = options?.dimensions ?? DEFAULT_EMBED_DIMENSIONS;
 
-    const response = await this.client.embeddings.create({
+    const response = await safeCall(() => this.client.embeddings.create({
       model,
       input: text,
       dimensions,
-    });
+    }));
 
     if (!response.data || response.data.length === 0) {
       throw new Error('OpenAI embedding returned no data');
@@ -190,6 +196,7 @@ function mapChatResponse(response: OpenAIChatResponse): ChatResponse {
 
   const content = choice.message.content ?? '';
   const toolCalls: ToolCall[] = (choice.message.tool_calls ?? []).map(tc => ({
+    id: tc.id,
     name: tc.function.name,
     arguments: safeParseJSON(tc.function.arguments),
   }));

@@ -17,10 +17,10 @@ describe('Trust Rings Gatekeeper', () => {
       expect(result.requiresApproval).toBe(true);
     });
 
-    it('HIGH actions require approval regardless', () => {
+    it('money actions BLOCKED for unverified (Ring 2+ required)', () => {
       const result = evaluateIntent('purchase', 'did:key:z6MkUnverified', 'unknown');
-      expect(result.riskLevel).toBe('HIGH');
-      expect(result.requiresApproval).toBe(true);
+      expect(result.riskLevel).toBe('BLOCKED');
+      expect(result.allowed).toBe(false);
     });
 
     it('BLOCKED actions denied regardless of ring', () => {

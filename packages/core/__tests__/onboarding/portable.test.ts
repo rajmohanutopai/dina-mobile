@@ -61,7 +61,7 @@ describe('Portable Onboarding', () => {
       const ws = deserializeWrappedSeed(result.wrapped);
       const seed = await unwrapSeed(TEST_PASSPHRASE, ws);
       expect(seed).toBeInstanceOf(Uint8Array);
-      expect(seed.length).toBe(64); // BIP-39 seed is 64 bytes
+      expect(seed.length).toBe(32); // Go-compatible 32-byte entropy (not 64-byte PBKDF2)
     }, 30_000);
 
     it('wrapped seed fails with wrong passphrase', async () => {

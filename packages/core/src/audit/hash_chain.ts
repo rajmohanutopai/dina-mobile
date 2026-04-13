@@ -4,8 +4,10 @@
  * Each entry contains SHA-256(previous entry's hash), forming a tamper-evident
  * chain. Verification walks the chain and checks each link.
  *
- * Canonical field order for hashing:
- *   {seq}|{ts}|{actor}|{action}|{resource}|{detail}|{prev_hash}
+ * Canonical field order for hashing (colon-separated, matching Go):
+ *   {seq}:{ts}:{actor}:{action}:{resource}:{detail}:{prev_hash}
+ *
+ * Genesis marker: first entry uses prev_hash = "genesis" (matching Go).
  *
  * Source: core/test/traceability_test.go
  */
@@ -16,10 +18,14 @@ import type { AuditEntry } from '@dina/test-harness';
 
 export type { AuditEntry } from '@dina/test-harness';
 
+/** Genesis marker for the first entry in the chain. Matches Go's `prev_hash = "genesis"`. */
+export const GENESIS_MARKER = 'genesis';
+
 /**
  * Compute the hash for an audit entry (SHA-256 of canonical fields).
  *
- * Canonical string: "{seq}|{ts}|{actor}|{action}|{resource}|{detail}|{prev_hash}"
+ * Canonical string: "{seq}:{ts}:{actor}:{action}:{resource}:{detail}:{prev_hash}"
+ * Colon separator matches Go's hash chain format.
  * This ensures any field modification is detectable.
  */
 export function computeEntryHash(entry: Omit<AuditEntry, 'entry_hash'>): string {
@@ -31,18 +37,18 @@ export function computeEntryHash(entry: Omit<AuditEntry, 'entry_hash'>): string 
     entry.resource,
     entry.detail,
     entry.prev_hash,
-  ].join('|');
+  ].join(':');
 
   return bytesToHex(sha256(new TextEncoder().encode(canonical)));
 }
 
 /**
  * Compute prev_hash for a new entry.
- * This is simply the entry_hash of the previous entry.
- * For the first entry in the chain, prev_hash is empty string.
+ * For the first entry in the chain, returns the genesis marker.
+ * For subsequent entries, returns the previous entry's entry_hash.
  */
 export function computePrevHash(previousEntryHash: string): string {
-  return previousEntryHash;
+  return previousEntryHash || GENESIS_MARKER;
 }
 
 /**
@@ -62,9 +68,10 @@ export function buildAuditEntry(
   resource: string,
   detail: string,
   previousEntryHash: string,
+  tsOverride?: number,
 ): AuditEntry {
   const prev_hash = computePrevHash(previousEntryHash);
-  const ts = Math.floor(Date.now() / 1000);
+  const ts = tsOverride ?? Math.floor(Date.now() / 1000);
 
   const partial = { seq, ts, actor, action, resource, detail, prev_hash };
   const entry_hash = computeEntryHash(partial);
@@ -76,8 +83,9 @@ export function buildAuditEntry(
  * Verify a chain of audit entries.
  *
  * Walks the chain and checks:
- * 1. Each entry's prev_hash matches the prior entry's entry_hash
- * 2. Each entry's entry_hash matches its recomputed hash
+ * 1. First entry's prev_hash must be the genesis marker
+ * 2. Each subsequent entry's prev_hash matches the prior entry's entry_hash
+ * 3. Each entry's entry_hash matches its recomputed hash
  *
  * @returns { valid: true } or { valid: false, brokenAt: index }
  */
@@ -89,8 +97,8 @@ export function verifyChain(entries: AuditEntry[]): { valid: boolean; brokenAt?:
 
     // Check prev_hash links correctly
     if (i === 0) {
-      // First entry: prev_hash should be empty (genesis)
-      if (entry.prev_hash !== '') {
+      // First entry: prev_hash must be genesis marker
+      if (entry.prev_hash !== GENESIS_MARKER) {
         return { valid: false, brokenAt: i };
       }
     } else {

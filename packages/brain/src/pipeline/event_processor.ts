@@ -42,7 +42,7 @@ export interface EventResult {
  *
  * Fail-safe: never throws. Returns an EventResult with error details on failure.
  */
-export function processEvent(input: EventInput): EventResult {
+export async function processEvent(input: EventInput): Promise<EventResult> {
   try {
     switch (input.event) {
       case 'approval_needed':
@@ -50,7 +50,7 @@ export function processEvent(input: EventInput): EventResult {
       case 'reminder_fired':
         return handleReminderFired(input);
       case 'post_publish':
-        return handlePostPublishEvent(input);
+        return await handlePostPublishEvent(input);
       case 'persona_unlocked':
         return handlePersonaUnlocked(input);
       case 'staging_batch':
@@ -74,8 +74,8 @@ export function processEvent(input: EventInput): EventResult {
 /**
  * Process multiple events. Returns results for each.
  */
-export function processEvents(inputs: EventInput[]): EventResult[] {
-  return inputs.map(processEvent);
+export async function processEvents(inputs: EventInput[]): Promise<EventResult[]> {
+  return Promise.all(inputs.map(processEvent));
 }
 
 // ---------------------------------------------------------------
@@ -138,14 +138,14 @@ function handleReminderFired(input: EventInput): EventResult {
   };
 }
 
-function handlePostPublishEvent(input: EventInput): EventResult {
+async function handlePostPublishEvent(input: EventInput): Promise<EventResult> {
   const { id, type, summary, body, timestamp, persona, sender_did, confidence } = input.data;
 
   if (!id || !summary) {
     return { event: 'post_publish', handled: false, error: 'id and summary are required' };
   }
 
-  const result: PostPublishResult = handlePostPublish({
+  const result: PostPublishResult = await handlePostPublish({
     id: String(id),
     type: String(type ?? 'note'),
     summary: String(summary),

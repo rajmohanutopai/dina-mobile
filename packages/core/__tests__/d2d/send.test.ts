@@ -130,4 +130,37 @@ describe('D2D Send Pipeline', () => {
       expect(typeof result.sent).toBe('boolean');
     });
   });
+
+  describe('V1 type enforcement', () => {
+    it('accepts valid V1 message types', async () => {
+      addContact(recipientDID);
+      setDeliveryFetchFn(async () => new Response(JSON.stringify({ status: 'delivered' })));
+
+      for (const type of ['social.update', 'safety.alert', 'presence.signal', 'coordination.request']) {
+        const result = await sendD2D({ ...baseReq, messageType: type });
+        expect(result.deniedAt).toBeUndefined();
+      }
+    });
+
+    it('rejects non-V1 message types', async () => {
+      addContact(recipientDID);
+      const result = await sendD2D({ ...baseReq, messageType: 'dina/query' });
+      expect(result.sent).toBe(false);
+      expect(result.deniedAt).toBe('type_enforcement');
+      expect(result.error).toContain('Unknown message type');
+    });
+
+    it('rejects arbitrary strings as message types', async () => {
+      addContact(recipientDID);
+      const result = await sendD2D({ ...baseReq, messageType: 'totally.made.up' });
+      expect(result.sent).toBe(false);
+      expect(result.deniedAt).toBe('type_enforcement');
+    });
+
+    it('V1 check runs before egress gates (no contact needed)', async () => {
+      // Don't add contact — V1 check should reject before gate 1
+      const result = await sendD2D({ ...baseReq, messageType: 'invalid.type' });
+      expect(result.deniedAt).toBe('type_enforcement');
+    });
+  });
 });

@@ -92,6 +92,42 @@ describe('Authorization Matrix', () => {
   const fixture = 'auth/authorization_matrix.json';
   const fixtureAvailable = hasFixture(fixture);
   const fixtureSuite = fixtureAvailable ? describe : describe.skip;
+  describe('path boundary safety (§A16)', () => {
+    it('rejects /v1/vault/storefoo (not a valid sub-path of /v1/vault/store)', () => {
+      // Without boundary checking, this would match the /v1/vault/store rule
+      expect(isAuthorized('brain', 'POST', '/v1/vault/storefoo')).toBe(false);
+    });
+
+    it('accepts /v1/vault/store (exact match)', () => {
+      expect(isAuthorized('brain', 'POST', '/v1/vault/store')).toBe(true);
+    });
+
+    it('accepts /v1/vault/store/batch (has / boundary)', () => {
+      expect(isAuthorized('brain', 'POST', '/v1/vault/store/batch')).toBe(true);
+    });
+
+    it('rejects /v1/stagingfoo', () => {
+      expect(isAuthorized('brain', 'POST', '/v1/stagingfoo')).toBe(false);
+    });
+
+    it('accepts /v1/staging/ingest', () => {
+      expect(isAuthorized('brain', 'POST', '/v1/staging/ingest')).toBe(true);
+    });
+
+    it('rejects /v1/personasfoo', () => {
+      expect(isAuthorized('brain', 'GET', '/v1/personasfoo')).toBe(false);
+    });
+
+    it('accepts prefixes that already end with /', () => {
+      // /v1/vault/item/ rule ends with / — any continuation is valid
+      expect(isAuthorized('brain', 'GET', '/v1/vault/item/abc123')).toBe(true);
+    });
+
+    it('rejects unknown paths (fail-closed)', () => {
+      expect(isAuthorized('brain', 'POST', '/v1/totally/unknown')).toBe(false);
+    });
+  });
+
   fixtureSuite('cross-language: authorization matrix (Go fixtures)', () => {
     // This fixture has flat vectors: { caller, path, allowed } — not standard inputs/expected
     const data = fixtureAvailable

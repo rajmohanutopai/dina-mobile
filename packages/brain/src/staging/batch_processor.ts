@@ -103,15 +103,16 @@ async function processOneItem(item: StagingItem): Promise<BatchItemResult> {
     const enriched = await enrichItem({ ...data, ...scored });
 
     // 4. Resolve — store or pending_unlock
+    // Pass enriched data so resolve() writes it to the vault (Fix: Codex #1)
     const personaOpen = isPersonaOpen(persona);
-    resolve(item.id, persona, personaOpen);
+    resolve(item.id, persona, personaOpen, enriched as Record<string, unknown>);
 
     const status = personaOpen ? 'stored' : 'pending_unlock';
 
     // 5. Post-publish (only for stored items)
     let postPublishResult;
     if (status === 'stored') {
-      const ppResult = handlePostPublish({
+      const ppResult = await handlePostPublish({
         id: item.id,
         type: String(enriched.type ?? ''),
         summary: String(enriched.content_l0 ?? enriched.summary ?? ''),

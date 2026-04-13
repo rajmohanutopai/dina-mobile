@@ -21,7 +21,7 @@
  * Source: ARCHITECTURE.md Tasks 4.2, 4.3
  */
 
-import { generateMnemonic, mnemonicToSeed, validateMnemonic } from '../../../core/src/crypto/bip39';
+import { generateMnemonic, mnemonicToEntropy, validateMnemonic } from '../../../core/src/crypto/bip39';
 import { wrapSeed, type WrappedSeed } from '../../../core/src/crypto/aesgcm';
 import { getPublicKey } from '../../../core/src/crypto/ed25519';
 import { deriveRootSigningKey } from '../../../core/src/crypto/slip0010';
@@ -122,7 +122,7 @@ export async function completeCreateIdentity(
   }
 
   // Derive 64-byte master seed from mnemonic (PBKDF2)
-  const masterSeed = mnemonicToSeed(mnemonic);
+  const masterSeed = mnemonicToEntropy(mnemonic);
 
   // Wrap master seed with passphrase (Argon2id → AES-256-GCM)
   const wrappedSeed = await wrapSeed(passphrase, masterSeed);
@@ -171,7 +171,7 @@ export function previewRecoveryDID(words: string[]): string | null {
   const mnemonic = words.map(w => w.trim().toLowerCase()).join(' ');
   if (!validateMnemonic(mnemonic)) return null;
 
-  const masterSeed = mnemonicToSeed(mnemonic);
+  const masterSeed = mnemonicToEntropy(mnemonic);
   const rootKey = deriveRootSigningKey(masterSeed, 0);
   const pubKey = getPublicKey(rootKey.privateKey);
   return deriveDIDKey(pubKey);

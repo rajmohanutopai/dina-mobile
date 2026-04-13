@@ -8,7 +8,8 @@
  * Source: brain/tests/test_pii.py (Entity Vault section)
  */
 
-import { scrubPII, rehydratePII } from '../../../core/src/pii/patterns';
+import { scrubPII, rehydratePII, type ScrubResult } from '../../../core/src/pii/patterns';
+import { detectTier2, type PatternMatch } from './tier2_patterns';
 
 export interface EntityVaultEntry {
   token: string;   // e.g., "[EMAIL_1]"
@@ -18,23 +19,64 @@ export interface EntityVaultEntry {
 
 export class EntityVault {
   private readonly map: Map<string, EntityVaultEntry> = new Map();
+  /** Per-type counters for sequential token numbering across both tiers. */
+  private readonly typeCounts: Record<string, number> = {};
 
   /**
-   * Scrub text, storing token→value mappings in the vault.
+   * Two-tier scrub, storing token→value mappings in the vault.
+   *
+   * Tier 1 (Go regex): emails, phones, cards, SSNs, bank accounts,
+   *   addresses, Aadhaar, PAN, IFSC, UPI, IPs
+   * Tier 2 (Presidio-equivalent): DE_STEUER_ID, FR_NIR, NL_BSN,
+   *   SWIFT_BIC, IN_PASSPORT — runs on the ALREADY-TOKENIZED Tier 1
+   *   output to avoid double-detection.
+   *
    * Returns the scrubbed text with PII replaced by tokens.
    */
   scrub(text: string): string {
-    const result = scrubPII(text);
+    // Tier 1: Core regex patterns
+    const tier1Result = scrubPII(text);
 
-    for (const entity of result.entities) {
+    for (const entity of tier1Result.entities) {
       this.map.set(entity.token, {
         token: entity.token,
         type: entity.type,
         value: entity.value,
       });
+      // Track type counts for Tier 2 numbering continuity
+      const count = (this.typeCounts[entity.type] || 0) + 1;
+      this.typeCounts[entity.type] = count;
     }
 
-    return result.scrubbed;
+    // Tier 2: Run on ALREADY-TOKENIZED text (critical: avoids double-detection).
+    // Tier 2 patterns see [EMAIL_1] tokens, not raw PII.
+    const tier2Matches = detectTier2(tier1Result.scrubbed);
+
+    // Filter Tier 2 matches: skip any that overlap with existing tokens
+    // (Tier 1 already handled them)
+    let scrubbed = tier1Result.scrubbed;
+    const tier2Hits = tier2Matches.filter(m => {
+      // Skip if the matched text is already a Tier 1 token
+      return !m.value.startsWith('[') || !m.value.endsWith(']');
+    });
+
+    // Apply Tier 2 scrubs (back-to-front to preserve positions)
+    const sorted = [...tier2Hits].sort((a, b) => b.start - a.start);
+    for (const match of sorted) {
+      const count = (this.typeCounts[match.entity_type] || 0) + 1;
+      this.typeCounts[match.entity_type] = count;
+      const token = `[${match.entity_type}_${count}]`;
+
+      this.map.set(token, {
+        token,
+        type: match.entity_type,
+        value: match.value,
+      });
+
+      scrubbed = scrubbed.slice(0, match.start) + token + scrubbed.slice(match.end);
+    }
+
+    return scrubbed;
   }
 
   /**

@@ -15,10 +15,11 @@
 import { unsealMessage, type D2DPayload } from './envelope';
 import { verifyMessage } from './signature';
 import { checkScenarioGate } from './gates';
-import { alwaysPasses } from './families';
+import { alwaysPasses, isValidV1Type, validateMessageBody } from './families';
 import { receiveAndStage, type ReceiveResult } from './receive';
 import { quarantineMessage } from './quarantine';
 import { appendAudit } from '../audit/service';
+import { isReplayedMessage, recordMessageId } from '../transport/adversarial';
 
 export type ReceivePipelineAction = 'staged' | 'quarantined' | 'dropped' | 'ephemeral';
 
@@ -78,10 +79,67 @@ export function receiveD2D(
     };
   }
 
-  // 3. Trust evaluation + 4. Scenario policy (combined in receiveAndStage for trusted)
-  // But we need scenario check BEFORE staging for known senders
-  if (senderTrust !== 'blocked' && senderTrust !== 'unknown') {
-    // Known sender — check scenario policy
+  // 3. Replay detection (SEC-HIGH-08) — reject already-seen message IDs.
+  // Uses sender DID + message ID as the cache key to prevent cross-sender
+  // ID collisions. Must come AFTER signature verification to prevent
+  // unauthenticated messages from polluting the cache.
+  const replayKey = `${message.from}|${message.id}`;
+  if (isReplayedMessage(replayKey)) {
+    appendAudit(message.from, 'd2d_recv_replay', message.to,
+      `id=${message.id}`);
+    return {
+      action: 'dropped',
+      messageId: message.id,
+      messageType: message.type,
+      senderDID: message.from,
+      signatureValid: true,
+      reason: 'Replayed message (already processed)',
+    };
+  }
+  recordMessageId(replayKey);
+
+  // 4. V1 type enforcement — silently drop non-V1 message types.
+  // Matches Go's ProcessInbound which rejects non-V1 types (benign drop —
+  // still returns 202 to prevent sender fingerprinting). Audit logged.
+  if (!isValidV1Type(message.type)) {
+    appendAudit(message.from, 'd2d_recv_type_rejected', message.to,
+      `type=${message.type}`);
+    return {
+      action: 'dropped',
+      messageId: message.id,
+      messageType: message.type,
+      senderDID: message.from,
+      signatureValid: true,
+      reason: `Non-V1 message type "${message.type}" rejected`,
+    };
+  }
+
+  // 5. Body size validation — reject oversized message bodies after decryption.
+  // Matches Go's ValidateBody() in ProcessInbound (256 KB max).
+  const bodyValidationError = validateMessageBody(message.body);
+  if (bodyValidationError) {
+    appendAudit(message.from, 'd2d_recv_body_oversized', message.to,
+      `id=${message.id}`);
+    return {
+      action: 'dropped',
+      messageId: message.id,
+      messageType: message.type,
+      senderDID: message.from,
+      signatureValid: true,
+      reason: bodyValidationError,
+    };
+  }
+
+  // Determine if sender is an explicit contact with a positive trust level.
+  // 'unknown' and '' mean "not a known contact" → quarantine.
+  // Only explicit trust levels (verified, trusted, contact_ring1, etc.) proceed.
+  // Fix: Codex #15 — 'unknown' was incorrectly treated as contact-equivalent.
+  const CONTACT_TRUST_LEVELS = new Set(['verified', 'trusted', 'contact_ring1', 'contact_ring2', 'self']);
+  const isContact = CONTACT_TRUST_LEVELS.has(senderTrust);
+
+  // 6. Trust evaluation + 7. Scenario policy
+  // Check scenario policy for known (non-blocked) senders
+  if (isContact) {
     if (!alwaysPasses(message.type) && !checkScenarioGate(message.from, message.type)) {
       appendAudit(message.from, 'd2d_recv_scenario_denied', message.to,
         `type=${message.type}`);
@@ -96,9 +154,9 @@ export function receiveD2D(
     }
   }
 
-  // 5. Stage / quarantine / drop via existing receive module
+  // 8. Stage / quarantine / drop via existing receive module
   const stageResult = receiveAndStage(
-    message.type, message.from, senderTrust, message.body, message.id,
+    message.type, message.from, senderTrust, message.body, message.id, isContact,
   );
 
   // If quarantined, also store in quarantine management

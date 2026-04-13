@@ -37,11 +37,46 @@ const FIDUCIARY_SOURCE_PATTERN = /^(security|health_system|bank|emergency)$/i;
 
 const SOLICITED_TYPE_SET = new Set(['reminder', 'search_result']);
 
-const ENGAGEMENT_TYPE_SET = new Set(['notification', 'promo', 'social', 'rss', 'podcast']);
+const ENGAGEMENT_TYPE_SET = new Set(['notification', 'promo', 'social', 'rss', 'podcast', 'background_sync']);
+
+/**
+ * Marketing/promo sources — phishing guard.
+ * "Cancel your account!" from a promo email should NOT be elevated to Tier 1.
+ * Python: "marketing urgency is NOT fiduciary."
+ */
+const MARKETING_SOURCES = new Set(['promo', 'marketing', 'newsletter', 'social']);
+
+/**
+ * Health elevation keywords — health-related items from trusted sources
+ * get Tier 1 even without explicit fiduciary keywords.
+ */
+const HEALTH_ELEVATION_PATTERN =
+  /blood\s*(?:sugar|pressure|test)|cholesterol|a1c|medication|prescription|insulin|hemoglobin|pathology|radiology/i;
 
 import { GUARDIAN_STALE_THRESHOLD_MS, ESCALATION_THRESHOLD as ESC_THRESHOLD } from '../constants';
+import { SILENCE_CLASSIFY } from '../llm/prompts';
+import { scrubPII } from '../../../core/src/pii/patterns';
 
 const STALE_THRESHOLD_MS = GUARDIAN_STALE_THRESHOLD_MS;
+
+// ---------------------------------------------------------------
+// Injectable LLM classifier
+// ---------------------------------------------------------------
+
+/** LLM call function: (system, prompt) → response string. */
+export type SilenceLLMCallFn = (system: string, prompt: string) => Promise<string>;
+
+let llmCallFn: SilenceLLMCallFn | null = null;
+
+/** Register an LLM provider for silence classification refinement. */
+export function registerSilenceClassifier(fn: SilenceLLMCallFn): void {
+  llmCallFn = fn;
+}
+
+/** Reset LLM classifier (for testing). */
+export function resetSilenceClassifier(): void {
+  llmCallFn = null;
+}
 
 // ---------------------------------------------------------------
 // DND state
@@ -233,6 +268,84 @@ export function resetBatchingState(): void {
 }
 
 // ---------------------------------------------------------------
+// LLM refinement
+// ---------------------------------------------------------------
+
+/**
+ * Refine a deterministic classification result with LLM when:
+ *   1. LLM provider is registered
+ *   2. Deterministic confidence is below 0.85 (ambiguous cases)
+ *   3. Marketing phishing guard doesn't apply (never trust LLM to override safety guard)
+ *
+ * The LLM result is bounded by safety rules:
+ *   - Cannot LOWER a fiduciary (Tier 1) result — Law 1 override
+ *   - Cannot RAISE marketing source content to fiduciary — phishing guard
+ *   - Confidence must be above 0.5 to be accepted
+ */
+async function refineSilenceWithLLM(
+  event: Record<string, unknown>,
+  deterministicResult: ClassificationResult,
+): Promise<ClassificationResult> {
+  // Skip LLM if not registered
+  if (!llmCallFn) return deterministicResult;
+
+  // Skip if deterministic result is already high-confidence
+  if (deterministicResult.confidence >= 0.85) return deterministicResult;
+
+  // Never let LLM override a deterministic fiduciary classification
+  if (deterministicResult.tier === 1) return deterministicResult;
+
+  const source = String(event.source || '');
+  const subject = String(event.subject || '');
+  const body = String(event.body || '');
+  const type = String(event.type || '');
+
+  // PII scrub before sending to cloud LLM — prevents leaking emails, phones, etc.
+  // Source and type are safe (system metadata), but subject and body may contain PII.
+  const { scrubbed: scrubbedSubject } = scrubPII(subject);
+  const { scrubbed: scrubbedBody } = scrubPII(body);
+
+  // Build prompt from template with scrubbed fields
+  const bodyPreview = scrubbedBody.length > 200 ? scrubbedBody.slice(0, 200) + '...' : scrubbedBody;
+  const prompt = SILENCE_CLASSIFY
+    .replace('{{source}}', source)
+    .replace('{{type}}', type)
+    .replace('{{subject}}', scrubbedSubject)
+    .replace('{{body_preview}}', bodyPreview);
+
+  try {
+    const response = await llmCallFn(
+      'You are a classifier for Dina, a personal sovereign AI assistant. Classify event urgency.',
+      prompt,
+    );
+    const parsed = JSON.parse(response);
+
+    const llmTier = Number(parsed.tier);
+    const llmConfidence = Number(parsed.confidence ?? 0);
+
+    // Validate LLM response — reject invalid tier, NaN, out-of-range confidence
+    if (![1, 2, 3].includes(llmTier) || isNaN(llmConfidence) || llmConfidence < 0.5 || llmConfidence > 1.0) {
+      return deterministicResult; // Invalid LLM result — keep deterministic
+    }
+
+    // Safety guard: marketing source can NEVER be elevated to fiduciary by LLM
+    if (llmTier === 1 && isMarketingSource(source)) {
+      return deterministicResult;
+    }
+
+    return {
+      tier: llmTier as PriorityTier,
+      reason: String(parsed.reason ?? 'LLM classification'),
+      confidence: llmConfidence,
+      method: 'llm',
+    };
+  } catch {
+    // LLM call failed — fall back to deterministic
+    return deterministicResult;
+  }
+}
+
+// ---------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------
 
@@ -258,10 +371,12 @@ export async function classifyPriority(
     };
   }
 
-  const result = classifyDeterministic(event);
+  const deterministicResult = classifyDeterministic(event);
 
-  // Escalation: if engagement events from this source exceed threshold → Tier 1
-  if (result.tier === 3 && source) {
+  // Escalation tracking runs on DETERMINISTIC result before LLM refinement
+  // so that repeated engagement events from the same source are tracked
+  // even if LLM would refine them to a different tier
+  if (deterministicResult.tier === 3 && source) {
     recordEngagementEvent(source);
     if (isEscalated(source)) {
       return {
@@ -272,6 +387,9 @@ export async function classifyPriority(
       };
     }
   }
+
+  // Attempt LLM refinement when available and deterministic confidence is low
+  const result = await refineSilenceWithLLM(event, deterministicResult);
 
   // DND mode: downgrade Tier 2 → Tier 3. Tier 1 is NEVER downgraded.
   if (dndEnabled && result.tier === 2) {
@@ -293,12 +411,48 @@ export async function classifyPriority(
     };
   }
 
+  // Stale content demotion: items older than 24h get reduced confidence.
+  // Tier 1 (fiduciary) NEVER demoted — Law 1 (fiduciary duty) overrides age.
+  // Tier 2 (solicited) → demoted to Tier 3 when stale.
+  // Tier 3 (engagement) → stays Tier 3, reduced confidence for sorting.
+  const rawTimestamp = Number(event.timestamp || 0);
+  // Normalize to milliseconds: if < 1e12, treat as Unix seconds → convert
+  const timestampMs = rawTimestamp > 0 && rawTimestamp < 1e12
+    ? rawTimestamp * 1000
+    : rawTimestamp;
+  if (timestampMs > 0) {
+    const staleness = isStaleContent(timestampMs);
+    if (staleness.stale && result.tier === 2) {
+      return {
+        tier: 3,
+        reason: `Stale demotion — solicited content is ${Math.round(staleness.factor * 24)}h+ old (${result.reason})`,
+        confidence: result.confidence * 0.5,
+        method: result.method,
+      };
+    }
+    if (staleness.stale && result.tier === 3) {
+      return {
+        ...result,
+        confidence: result.confidence * 0.6,
+        reason: `${result.reason} (stale: confidence reduced)`,
+      };
+    }
+  }
+
   return result;
 }
 
 /**
  * Deterministic fallback: classify using regex keywords only.
- * Priority order: fiduciary (1) > solicited (2) > engagement (3) > default (3).
+ *
+ * Priority order:
+ *   1. Fiduciary source (bank, health_system, security, emergency)
+ *   2. Fiduciary keyword — BUT marketing phishing guard: keywords
+ *      from promo/marketing sources are NOT elevated to Tier 1
+ *   3. Health elevation — health keywords from health_system source → Tier 1
+ *   4. Solicited type (reminder, search_result)
+ *   5. Engagement type (notification, promo, social, rss, podcast, background_sync)
+ *   6. Default Tier 3 (Silence First)
  */
 export function classifyDeterministic(
   event: Record<string, unknown>,
@@ -309,7 +463,7 @@ export function classifyDeterministic(
   const type = String(event.type || '');
   const text = `${subject} ${body}`;
 
-  // Tier 1: Fiduciary — urgent, must interrupt
+  // Tier 1: Fiduciary source — urgent, must interrupt
   if (isFiduciarySource(source)) {
     return {
       tier: 1,
@@ -319,11 +473,26 @@ export function classifyDeterministic(
     };
   }
 
-  if (matchesFiduciaryKeywords(text)) {
+  // Tier 1: Fiduciary keywords — WITH marketing phishing guard
+  // "cancel your account" from a promo email is NOT fiduciary.
+  // Python: "marketing urgency is NOT fiduciary."
+  if (matchesFiduciaryKeywords(text) && !isMarketingSource(source)) {
     return {
       tier: 1,
       reason: 'Fiduciary keyword detected in text',
       confidence: 0.85,
+      method: 'deterministic',
+    };
+  }
+
+  // Health elevation: health-related keywords from health source → Tier 1
+  // Even without explicit fiduciary keywords like "lab result" or "diagnosis",
+  // health-specific content from trusted health sources deserves urgency.
+  if (matchesHealthElevation(text) && source === 'health_system') {
+    return {
+      tier: 1,
+      reason: 'Health context elevation — health keyword from health_system source',
+      confidence: 0.80,
       method: 'deterministic',
     };
   }
@@ -375,6 +544,16 @@ export function isSolicitedType(type: string): boolean {
 /** Check if an event type is engagement (nice-to-know). */
 export function isEngagementType(type: string): boolean {
   return ENGAGEMENT_TYPE_SET.has(type);
+}
+
+/** Check if a source is a marketing/promo source (phishing guard). */
+export function isMarketingSource(source: string): boolean {
+  return MARKETING_SOURCES.has(source.toLowerCase());
+}
+
+/** Check if text matches health elevation keywords. */
+export function matchesHealthElevation(text: string): boolean {
+  return HEALTH_ELEVATION_PATTERN.test(text);
 }
 
 /**

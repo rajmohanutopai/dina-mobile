@@ -13,7 +13,8 @@
  */
 
 import {
-  ApprovalManager, type ApprovalRequest,
+  getApprovalManager, resetApprovalManager,
+  type ApprovalRequest,
 } from '../../../core/src/approval/manager';
 import { addMessage, type ChatMessage } from '../../../brain/src/chat/thread';
 
@@ -29,9 +30,6 @@ export interface ApprovalCardData {
   scope?: 'single' | 'session';
   createdAt: number;
 }
-
-/** Shared approval manager. */
-let manager = new ApprovalManager();
 
 /** DID → label mapping for display. */
 const didLabels = new Map<string, string>();
@@ -57,7 +55,7 @@ export function createApprovalCard(
   preview: string,
   threadId?: string,
 ): ApprovalCardData {
-  manager.requestApproval({
+  getApprovalManager().requestApproval({
     id,
     action,
     requester_did: requesterDID,
@@ -74,7 +72,7 @@ export function createApprovalCard(
     );
   }
 
-  return toCardData(manager.getRequest(id)!);
+  return toCardData(getApprovalManager().getRequest(id)!);
 }
 
 /**
@@ -88,8 +86,8 @@ export function approveCard(
   approverDID: string,
 ): ApprovalCardData | null {
   try {
-    manager.approveRequest(id, scope, approverDID);
-    return toCardData(manager.getRequest(id)!);
+    getApprovalManager().approveRequest(id, scope, approverDID);
+    return toCardData(getApprovalManager().getRequest(id)!);
   } catch {
     return null;
   }
@@ -100,8 +98,8 @@ export function approveCard(
  */
 export function denyCard(id: string): ApprovalCardData | null {
   try {
-    manager.denyRequest(id);
-    return toCardData(manager.getRequest(id)!);
+    getApprovalManager().denyRequest(id);
+    return toCardData(getApprovalManager().getRequest(id)!);
   } catch {
     return null;
   }
@@ -111,14 +109,14 @@ export function denyCard(id: string): ApprovalCardData | null {
  * Get all pending approval cards for the chat UI.
  */
 export function getPendingCards(): ApprovalCardData[] {
-  return manager.listPending().map(toCardData);
+  return getApprovalManager().listPending().map(toCardData);
 }
 
 /**
  * Get a specific card's data.
  */
 export function getCard(id: string): ApprovalCardData | null {
-  const req = manager.getRequest(id);
+  const req = getApprovalManager().getRequest(id);
   return req ? toCardData(req) : null;
 }
 
@@ -126,21 +124,21 @@ export function getCard(id: string): ApprovalCardData | null {
  * Get the count of pending approvals (for badge display).
  */
 export function getPendingCount(): number {
-  return manager.listPending().length;
+  return getApprovalManager().listPending().length;
 }
 
 /**
  * Check if a specific approval was granted (for action execution).
  */
 export function isApproved(id: string): boolean {
-  return manager.isApproved(id);
+  return getApprovalManager().isApproved(id);
 }
 
 /**
  * Consume a single-use approval (after the action is executed).
  */
 export function consumeApproval(id: string): boolean {
-  return manager.consumeSingle(id);
+  return getApprovalManager().consumeSingle(id);
 }
 
 /**
@@ -148,7 +146,7 @@ export function consumeApproval(id: string): boolean {
  * Returns the count of revoked approvals.
  */
 export function endSession(): number {
-  return manager.revokeSession();
+  return getApprovalManager().revokeSession();
 }
 
 /**
@@ -156,7 +154,7 @@ export function endSession(): number {
  */
 export function resetApprovalCards(): void {
   didLabels.clear();
-  manager = new ApprovalManager();
+  resetApprovalManager();
 }
 
 /** Convert ApprovalRequest to UI card data. */

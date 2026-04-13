@@ -49,6 +49,7 @@ describe('Advanced Silence Classification', () => {
     it('search result user asked for → solicited', async () => {
       const result = await classifyPriority(makeEvent({
         type: 'search_result', subject: 'Results for "ergonomic chairs"',
+        timestamp: Date.now(),
       }));
       expect(result.tier).toBe(2);
     });
@@ -84,6 +85,7 @@ describe('Advanced Silence Classification', () => {
       disableDND();
       const result = await classifyPriority(makeEvent({
         type: 'reminder', subject: 'Meeting in 15 minutes',
+        timestamp: Date.now(),
       }));
       expect(result.tier).toBe(2);
     });
@@ -146,9 +148,10 @@ describe('Advanced Silence Classification', () => {
       expect(result.confidence).toBeGreaterThanOrEqual(0.85);
     });
 
-    it('mixed signals (fiduciary keyword + engagement source) → Tier 1 wins', async () => {
+    it('mixed signals (fiduciary keyword + non-marketing source) → Tier 1 wins', async () => {
+      // "social" is now a marketing source (phishing guard). Use "gmail" instead.
       const result = await classifyPriority(makeEvent({
-        source: 'social', subject: 'Emergency: account compromised',
+        source: 'gmail', subject: 'Emergency: account compromised',
       }));
       expect(result.tier).toBe(1);
     });
@@ -261,6 +264,7 @@ describe('Advanced Silence Classification', () => {
       setClockFn(() => 14); // 2 PM — outside quiet hours
       const result = await classifyPriority(makeEvent({
         type: 'reminder', subject: 'Meeting in 15 min',
+        timestamp: Date.now(),
       }));
       expect(result.tier).toBe(2); // normal Tier 2
     });

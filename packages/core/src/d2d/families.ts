@@ -41,6 +41,25 @@ const EPHEMERAL_TYPES = new Set(['presence.signal']);
 const ALWAYS_PASS_TYPES = new Set(['safety.alert']);
 
 /**
+ * Message type → scenario mapping for scenario-policy gating.
+ * Used by egress/ingress gates to look up which scenario tier applies.
+ *
+ * Source: Go domain/message.go MsgTypeToScenario()
+ */
+const TYPE_TO_SCENARIO: Record<string, string> = {
+  'presence.signal':        'presence',
+  'coordination.request':   'coordination',
+  'coordination.response':  'coordination',
+  'social.update':          'social',
+  'safety.alert':           'safety',
+  'trust.vouch.request':    'trust',
+  'trust.vouch.response':   'trust',
+};
+
+/** Maximum D2D message body size in bytes (256 KB). */
+export const MAX_MESSAGE_BODY_SIZE = 256 * 1024;
+
+/**
  * Check if a message type string is a valid V1 family.
  */
 export function isValidV1Type(messageType: string): boolean {
@@ -72,4 +91,28 @@ export function shouldStore(messageType: string): boolean {
  */
 export function alwaysPasses(messageType: string): boolean {
   return ALWAYS_PASS_TYPES.has(messageType);
+}
+
+/**
+ * Map a D2D message type to its scenario name for policy gating.
+ * Returns empty string for unknown types (caller should reject).
+ *
+ * Source: Go domain/message.go MsgTypeToScenario()
+ */
+export function msgTypeToScenario(messageType: string): string {
+  return TYPE_TO_SCENARIO[messageType] ?? '';
+}
+
+/**
+ * Validate a D2D message body size.
+ * Returns null if valid, or an error message if too large.
+ */
+export function validateMessageBody(body: string | Uint8Array): string | null {
+  const size = typeof body === 'string'
+    ? new TextEncoder().encode(body).byteLength
+    : body.byteLength;
+  if (size > MAX_MESSAGE_BODY_SIZE) {
+    return `message body exceeds maximum size of ${MAX_MESSAGE_BODY_SIZE} bytes (got ${size})`;
+  }
+  return null;
 }

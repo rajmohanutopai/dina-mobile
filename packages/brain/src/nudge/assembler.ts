@@ -10,7 +10,41 @@
  * Source: ARCHITECTURE.md Task 3.24
  */
 
-import { queryVault, clearVaults } from '../../../core/src/vault/crud';
+import { queryVault } from '../../../core/src/vault/crud';
+
+// ---------------------------------------------------------------
+// 7-day frequency cap — prevent nudge spam per contact
+//
+// Matching Python's nudge frequency cap: no nudge for the same
+// contact within 7 days. Prevents repeated notifications.
+// ---------------------------------------------------------------
+
+/** Frequency cap: minimum 7 days between nudges for the same contact. */
+const NUDGE_FREQUENCY_CAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Last nudge timestamp per contact DID. */
+const lastNudgeAt = new Map<string, number>();
+
+/**
+ * Check if a nudge is allowed for a contact (frequency cap).
+ * Returns true if no nudge was sent within the last 7 days.
+ */
+export function isNudgeAllowed(contactDID: string, now?: number): boolean {
+  const currentTime = now ?? Date.now();
+  const lastTime = lastNudgeAt.get(contactDID);
+  if (lastTime === undefined) return true;
+  return (currentTime - lastTime) >= NUDGE_FREQUENCY_CAP_MS;
+}
+
+/** Record that a nudge was generated for a contact. */
+export function recordNudgeSent(contactDID: string, now?: number): void {
+  lastNudgeAt.set(contactDID, now ?? Date.now());
+}
+
+/** Reset frequency cap state (for testing). */
+export function resetNudgeFrequency(): void {
+  lastNudgeAt.clear();
+}
 
 export interface NudgeItem {
   type: 'message' | 'note' | 'promise' | 'event' | 'preference';
@@ -40,7 +74,13 @@ export function assembleNudge(
   contactDID: string,
   contactName: string,
   personas?: string[],
+  now?: number,
 ): Nudge | null {
+  // 7-day frequency cap: don't nudge the same contact too often
+  if (!isNudgeAllowed(contactDID, now)) {
+    return null;
+  }
+
   const searchPersonas = personas ?? ['general'];
   const allItems: NudgeItem[] = [];
 
@@ -66,27 +106,62 @@ export function assembleNudge(
   // Take top 5 most relevant
   const topItems = allItems.slice(0, 5);
 
+  // Record nudge for frequency cap
+  const currentTime = now ?? Date.now();
+  recordNudgeSent(contactDID, currentTime);
+
   return {
     contactDID,
     items: topItems,
     summary: buildNudgeSummary(contactName, topItems),
-    generatedAt: Date.now(),
+    generatedAt: currentTime,
   };
+}
+
+// ---------------------------------------------------------------
+// Promise detection — 6 regex patterns (matching Python nudge.py)
+//
+// Detects explicit promises, obligations, and lending patterns
+// in vault item text. Used for promise-aware nudge assembly.
+// ---------------------------------------------------------------
+
+const PROMISE_PATTERNS = [
+  /\bi'?ll\s+bring/i,               // "I'll bring the book"
+  /\bi\s+owe/i,                     // "I owe Bob $20"
+  /\bpromised?\s+to/i,              // "promised to lend", "promise to call"
+  /\bpromised\b/i,                  // "Promised Alice coffee" (standalone)
+  /\bi\s+need\s+to\s+return/i,      // "I need to return the charger"
+  /\blend\s+(?:you|him|her|them)/i, // "lend you my umbrella"
+  /\bremind\s+me\s+to\s+give/i,     // "remind me to give Alice the book"
+];
+
+/**
+ * Check if text contains a promise pattern.
+ *
+ * Uses 6 regex patterns matching Python's promise detection:
+ * "I'll bring", "I owe", "promised to", "I need to return",
+ * "lend you/him/her/them", "remind me to give".
+ */
+export function isPromise(text: string): boolean {
+  return PROMISE_PATTERNS.some(pattern => pattern.test(text));
 }
 
 /**
  * Classify the nudge item type from vault item metadata.
+ *
+ * Uses regex-based promise detection (6 patterns from Python)
+ * instead of basic substring matching.
  */
 function classifyNudgeType(itemType: string, summary: string): NudgeItem['type'] {
-  const lower = (summary || '').toLowerCase();
+  const text = summary || '';
 
-  if (lower.includes('promise') || lower.includes('lend') || lower.includes('owe')) {
+  if (isPromise(text)) {
     return 'promise';
   }
-  if (lower.includes('birthday') || lower.includes('meeting') || lower.includes('appointment')) {
+  if (/\b(?:birthday|meeting|appointment|deadline|event)\b/i.test(text)) {
     return 'event';
   }
-  if (lower.includes('prefer') || lower.includes('likes') || lower.includes('favorite')) {
+  if (/\b(?:prefer|likes?|favou?rite)/i.test(text)) {
     return 'preference';
   }
   if (itemType === 'relationship_note' || itemType === 'social') {

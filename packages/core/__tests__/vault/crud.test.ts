@@ -7,7 +7,7 @@
  * Source: core/test/vault_test.go (CRUD section)
  */
 
-import { storeItem, storeBatch, queryVault, getItem, deleteItem, clearVaults } from '../../src/vault/crud';
+import { storeItem, storeBatch, queryVault, getItem, getItemIncludeDeleted, deleteItem, clearVaults } from '../../src/vault/crud';
 import { makeVaultItem, makeSearchQuery, resetFactoryCounters } from '@dina/test-harness';
 
 describe('Vault CRUD Operations', () => {
@@ -77,6 +77,31 @@ describe('Vault CRUD Operations', () => {
     it('stores empty batch (no-op, returns empty array)', () => {
       const ids = storeBatch('general', []);
       expect(ids).toEqual([]);
+    });
+
+    it('transactional: invalid item rollbacks all (none stored)', () => {
+      const items = [
+        makeVaultItem({ summary: 'Good item 1' }),
+        makeVaultItem({ summary: 'Good item 2' }),
+        makeVaultItem({ summary: 'Bad item', type: 'INVALID_TYPE' as any }),
+      ];
+
+      expect(() => storeBatch('general', items)).toThrow('batch item 2');
+
+      // None of the items should have been stored
+      const results = queryVault('general', { mode: 'fts5', text: 'good', limit: 10 });
+      expect(results).toHaveLength(0);
+    });
+
+    it('transactional: all valid items stored on success', () => {
+      const items = [
+        makeVaultItem({ summary: 'Batch A' }),
+        makeVaultItem({ summary: 'Batch B' }),
+      ];
+      const ids = storeBatch('general', items);
+      expect(ids).toHaveLength(2);
+      expect(getItem('general', ids[0])).not.toBeNull();
+      expect(getItem('general', ids[1])).not.toBeNull();
     });
   });
 
@@ -154,7 +179,10 @@ describe('Vault CRUD Operations', () => {
       storeItem('general', item);
       const result = deleteItem('general', item.id);
       expect(result).toBe(true);
-      const deleted = getItem('general', item.id);
+      // getItem returns null for deleted items (matching Go WHERE deleted=0)
+      expect(getItem('general', item.id)).toBeNull();
+      // But getItemIncludeDeleted still sees it
+      const deleted = getItemIncludeDeleted('general', item.id);
       expect(deleted!.deleted).toBe(1);
     });
 
@@ -170,11 +198,18 @@ describe('Vault CRUD Operations', () => {
       expect(queryVault('general', query)).toHaveLength(0);
     });
 
-    it('deleted item still retrievable by getItem (soft delete)', () => {
+    it('getItem returns null for deleted items (matching Go)', () => {
       const item = makeVaultItem();
       storeItem('general', item);
       deleteItem('general', item.id);
-      const found = getItem('general', item.id);
+      expect(getItem('general', item.id)).toBeNull();
+    });
+
+    it('getItemIncludeDeleted returns deleted items (for audit)', () => {
+      const item = makeVaultItem();
+      storeItem('general', item);
+      deleteItem('general', item.id);
+      const found = getItemIncludeDeleted('general', item.id);
       expect(found).not.toBeNull();
       expect(found!.deleted).toBe(1);
     });

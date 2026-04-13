@@ -49,6 +49,14 @@ export interface SearchQuery {
   embedding?: Float32Array;
   limit: number;
   filters?: Record<string, string>;
+  /** Filter by vault item type(s). Only items with matching type are returned. */
+  types?: string[];
+  /** Filter by timestamp: only items after this Unix ms timestamp. */
+  after?: number;
+  /** Filter by timestamp: only items before this Unix ms timestamp. */
+  before?: number;
+  /** Skip first N results (pagination). Applied after scoring/sorting. */
+  offset?: number;
 }
 
 export interface StagingItem {

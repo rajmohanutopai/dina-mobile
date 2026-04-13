@@ -102,14 +102,31 @@ export function assembleBriefing(now?: number): Briefing | null {
   // 4. New memories
   const memories = memoryProvider ? memoryProvider() : [];
 
-  const totalItems = engagement.length + reminders.length + approvals.length + memories.length;
+  // Deduplicate by body text (matching Python: no duplicate items in briefing)
+  const allItems = [
+    ...engagement, ...reminders, ...approvals, ...memories,
+  ];
+  const deduped = deduplicateByTitle(allItems);
+
+  // Re-split into sections after dedup
+  const dedupedSections = {
+    engagement: deduped.filter(i => i.type === 'engagement'),
+    reminders: deduped.filter(i => i.type === 'reminder'),
+    approvals: deduped.filter(i => i.type === 'approval'),
+    memories: deduped.filter(i => i.type === 'memory'),
+  };
+
+  // Sort engagement items by source priority (matching Python)
+  dedupedSections.engagement = sortBySourcePriority(dedupedSections.engagement);
+
+  const totalItems = deduped.length;
 
   // Silence First: no empty briefings
   if (totalItems === 0) return null;
 
   return {
     generatedAt: currentTime,
-    sections: { engagement, reminders, approvals, memories },
+    sections: dedupedSections,
     totalItems,
   };
 }
@@ -147,4 +164,72 @@ export function resetBriefingState(): void {
   approvalProvider = null;
   memoryProvider = null;
   lastBriefingAt = 0;
+}
+
+// ---------------------------------------------------------------
+// Source-priority sorting (matching Python briefing)
+//
+// Priority order: finance > health > calendar > messaging > rss > other
+// Higher priority items appear first in the briefing.
+// ---------------------------------------------------------------
+
+const SOURCE_PRIORITY: Record<string, number> = {
+  finance:   6,
+  financial: 6,
+  bank:      6,
+  health:    5,
+  medical:   5,
+  calendar:  4,
+  event:     4,
+  messaging: 3,
+  telegram:  3,
+  email:     3,
+  rss:       2,
+  feed:      2,
+  social:    1,
+  promo:     0,
+};
+
+/**
+ * Sort briefing items by source priority (matching Python).
+ *
+ * Items from higher-priority sources (finance, health) appear before
+ * lower-priority sources (rss, social, promo). Items with the same
+ * priority maintain their original order (stable sort by timestamp).
+ */
+export function sortBySourcePriority(items: BriefingItem[]): BriefingItem[] {
+  return [...items].sort((a, b) => {
+    const aPriority = SOURCE_PRIORITY[(a.source ?? '').toLowerCase()] ?? 1;
+    const bPriority = SOURCE_PRIORITY[(b.source ?? '').toLowerCase()] ?? 1;
+    if (aPriority !== bPriority) return bPriority - aPriority; // higher priority first
+    return b.timestamp - a.timestamp; // newer first within same priority
+  });
+}
+
+/**
+ * Deduplicate briefing items by title text.
+ *
+ * If two items have the same title, only the first (newest) is kept.
+ * Matching Python's body-text dedup to prevent duplicate items.
+ */
+export function deduplicateByTitle(items: BriefingItem[]): BriefingItem[] {
+  const seen = new Set<string>();
+  const deduped: BriefingItem[] = [];
+
+  // Sort by timestamp descending (newest first) before dedup
+  const sorted = [...items].sort((a, b) => b.timestamp - a.timestamp);
+
+  for (const item of sorted) {
+    const key = item.title.toLowerCase().trim();
+    if (!key) {
+      deduped.push(item); // empty titles always included
+      continue;
+    }
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(item);
+    }
+  }
+
+  return deduped;
 }

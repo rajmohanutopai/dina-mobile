@@ -20,7 +20,13 @@ import {
   disconnectDevice,
   addSyncItem,
   corruptCache,
+  validateSyncItemSize,
+  validateSyncBatch,
+  SYNC_PAGE_SIZE,
+  MAX_BATCH_ITEMS,
+  MAX_ITEM_SIZE_BYTES,
 } from '../../src/sync/client';
+import type { SyncItem } from '../../src/sync/client';
 import { completePairing, setNodeDID } from '../../src/pairing/ceremony';
 
 describe('Device Sync Integration', () => {
@@ -166,6 +172,101 @@ describe('Device Sync Integration', () => {
       expect(isAuthenticated('dev-A')).toBe(true);
       expect(isAuthenticated('dev-B')).toBe(true);
       expect(isAuthenticated('dev-C')).toBe(false);
+    });
+  });
+
+  describe('pagination', () => {
+    it('returns hasMore: false when all items fit in one page', async () => {
+      addSyncItem({ id: 'a', type: 'note', data: {}, checkpoint: 1 });
+      addSyncItem({ id: 'b', type: 'note', data: {}, checkpoint: 2 });
+      const result = await syncFromCheckpoint(0);
+      expect(result.items).toHaveLength(2);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('returns hasMore: true when more items than page size', async () => {
+      // Add more items than SYNC_PAGE_SIZE
+      for (let i = 1; i <= SYNC_PAGE_SIZE + 5; i++) {
+        addSyncItem({ id: `item-${i}`, type: 'note', data: {}, checkpoint: i });
+      }
+      const result = await syncFromCheckpoint(0);
+      expect(result.items).toHaveLength(SYNC_PAGE_SIZE);
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('second page returns remaining items', async () => {
+      for (let i = 1; i <= SYNC_PAGE_SIZE + 5; i++) {
+        addSyncItem({ id: `item-${i}`, type: 'note', data: {}, checkpoint: i });
+      }
+      const page1 = await syncFromCheckpoint(0);
+      expect(page1.hasMore).toBe(true);
+
+      const page2 = await syncFromCheckpoint(page1.newCheckpoint);
+      expect(page2.items).toHaveLength(5);
+      expect(page2.hasMore).toBe(false);
+    });
+
+    it('respects custom page size', async () => {
+      for (let i = 1; i <= 10; i++) {
+        addSyncItem({ id: `item-${i}`, type: 'note', data: {}, checkpoint: i });
+      }
+      const result = await syncFromCheckpoint(0, 3);
+      expect(result.items).toHaveLength(3);
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('SYNC_PAGE_SIZE is 100 (matching Go)', () => {
+      expect(SYNC_PAGE_SIZE).toBe(100);
+    });
+
+    it('returns items sorted by checkpoint ascending', async () => {
+      addSyncItem({ id: 'c', type: 'note', data: {}, checkpoint: 30 });
+      addSyncItem({ id: 'a', type: 'note', data: {}, checkpoint: 10 });
+      addSyncItem({ id: 'b', type: 'note', data: {}, checkpoint: 20 });
+      const result = await syncFromCheckpoint(0) as { items: SyncItem[] };
+      expect(result.items[0].checkpoint).toBe(10);
+      expect(result.items[1].checkpoint).toBe(20);
+      expect(result.items[2].checkpoint).toBe(30);
+    });
+  });
+
+  describe('MCP payload validation', () => {
+    it('accepts item within size limit', () => {
+      const item: SyncItem = { id: 'small', type: 'note', data: { body: 'Hello' }, checkpoint: 1 };
+      expect(validateSyncItemSize(item)).toBeNull();
+    });
+
+    it('rejects item exceeding 256KB', () => {
+      const largeData = { body: 'x'.repeat(300 * 1024) }; // 300KB
+      const item: SyncItem = { id: 'big', type: 'note', data: largeData, checkpoint: 1 };
+      expect(validateSyncItemSize(item)).toContain('exceeds max size');
+    });
+
+    it('accepts batch within limits', () => {
+      const items: SyncItem[] = Array.from({ length: 10 }, (_, i) => ({
+        id: `item-${i}`, type: 'note', data: { n: i }, checkpoint: i,
+      }));
+      expect(validateSyncBatch(items)).toBeNull();
+    });
+
+    it('rejects batch exceeding 1000 items', () => {
+      const items: SyncItem[] = Array.from({ length: 1001 }, (_, i) => ({
+        id: `item-${i}`, type: 'note', data: {}, checkpoint: i,
+      }));
+      expect(validateSyncBatch(items)).toContain('Batch too large');
+    });
+
+    it('rejects batch containing oversized item', () => {
+      const items: SyncItem[] = [
+        { id: 'ok', type: 'note', data: {}, checkpoint: 1 },
+        { id: 'big', type: 'note', data: { body: 'x'.repeat(300 * 1024) }, checkpoint: 2 },
+      ];
+      expect(validateSyncBatch(items)).toContain('exceeds max size');
+    });
+
+    it('constants match Python MCP limits', () => {
+      expect(MAX_BATCH_ITEMS).toBe(1000);
+      expect(MAX_ITEM_SIZE_BYTES).toBe(256 * 1024);
     });
   });
 });

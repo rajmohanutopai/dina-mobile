@@ -12,16 +12,15 @@ import type { DIDDocument } from '../../src/identity/did_document';
 
 describe('DID Document Models (Python vectors)', () => {
   const testDoc: DIDDocument = {
-    '@context': ['https://www.w3.org/ns/did/v1'],
+    '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/multikey/v1'],
     id: 'did:key:z6MkTest123',
     verificationMethod: [{
-      id: 'did:key:z6MkTest123#signing-0',
-      type: 'Ed25519VerificationKey2020',
+      id: 'did:key:z6MkTest123#key-1',
+      type: 'Multikey',
       controller: 'did:key:z6MkTest123',
       publicKeyMultibase: 'z6MkTestMultibase',
     }],
-    authentication: ['did:key:z6MkTest123#signing-0'],
-    assertionMethod: ['did:key:z6MkTest123#signing-0'],
+    authentication: ['did:key:z6MkTest123#key-1'],
     service: [],
   };
 
@@ -41,12 +40,6 @@ describe('DID Document Models (Python vectors)', () => {
       const json = serializeDIDDocument(testDoc);
       expect(json).toContain('verificationMethod');
       expect(json).not.toContain('verification_method');
-    });
-
-    it('uses camelCase assertionMethod', () => {
-      const json = serializeDIDDocument(testDoc);
-      expect(json).toContain('assertionMethod');
-      expect(json).not.toContain('assertion_method');
     });
 
     it('produces valid JSON', () => {
@@ -72,12 +65,10 @@ describe('DID Document Models (Python vectors)', () => {
           public_key_multibase: vm.publicKeyMultibase,
         })),
         authentication: testDoc.authentication,
-        assertion_method: testDoc.assertionMethod,
         service: testDoc.service,
       });
       const doc = deserializeDIDDocument(snakeCase);
       expect(doc.verificationMethod[0].publicKeyMultibase).toBe('z6MkTestMultibase');
-      expect(doc.assertionMethod).toEqual(testDoc.assertionMethod);
     });
 
     it('supports multiple verification methods', () => {
@@ -85,18 +76,19 @@ describe('DID Document Models (Python vectors)', () => {
         ...testDoc,
         verificationMethod: [
           testDoc.verificationMethod[0],
-          { ...testDoc.verificationMethod[0], id: 'did:key:z6MkTest123#signing-1' },
+          { ...testDoc.verificationMethod[0], id: 'did:key:z6MkTest123#key-2' },
         ],
       };
       const doc = deserializeDIDDocument(JSON.stringify(multiVM));
       expect(doc.verificationMethod).toHaveLength(2);
-      expect(doc.verificationMethod[1].id).toBe('did:key:z6MkTest123#signing-1');
+      expect(doc.verificationMethod[1].id).toBe('did:key:z6MkTest123#key-2');
     });
 
-    it('defaults @context to W3C DID v1 when missing', () => {
-      const noContext = { id: 'did:key:z6MkTest', verificationMethod: [], authentication: [], assertionMethod: [], service: [] };
+    it('defaults @context when missing', () => {
+      const noContext = { id: 'did:key:z6MkTest', verificationMethod: [], authentication: [], service: [] };
       const doc = deserializeDIDDocument(JSON.stringify(noContext));
       expect(doc['@context']).toContain('https://www.w3.org/ns/did/v1');
+      expect(doc['@context']).toContain('https://w3id.org/security/multikey/v1');
     });
   });
 

@@ -195,6 +195,255 @@ describe('Vault Hybrid Search (2.38)', () => {
     });
   });
 
+  describe('trust-weighted reranking', () => {
+    it('self-authored items rank higher than unknown', () => {
+      // Both items have identical FTS and semantic scores
+      storeItem('general', {
+        summary: 'Meeting notes from project review', type: 'note',
+        embedding: embed(0.9, 0.1, 0.0, 0.0),
+        sender_trust: 'unknown', confidence: 'medium',
+      });
+      storeItem('general', {
+        summary: 'Meeting notes from project standup', type: 'note',
+        embedding: embed(0.9, 0.1, 0.0, 0.0),
+        sender_trust: 'self', confidence: 'medium',
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid',
+        text: 'meeting',
+        embedding: queryEmbed(0.9, 0.1, 0.0, 0.0),
+        limit: 10,
+      });
+
+      expect(results).toHaveLength(2);
+      // Self-authored (1.2x boost) should rank higher
+      expect(results[0].sender_trust).toBe('self');
+    });
+
+    it('caveated items rank lower than normal', () => {
+      storeItem('general', {
+        summary: 'Health report from clinic', type: 'note',
+        embedding: embed(0.8, 0.2, 0.0, 0.0),
+        retrieval_policy: 'caveated',
+      });
+      storeItem('general', {
+        summary: 'Health checkup results', type: 'note',
+        embedding: embed(0.8, 0.2, 0.0, 0.0),
+        retrieval_policy: 'normal',
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid',
+        text: 'health',
+        embedding: queryEmbed(0.8, 0.2, 0.0, 0.0),
+        limit: 10,
+      });
+
+      expect(results).toHaveLength(2);
+      // Normal retrieval_policy (1.0x) should rank above caveated (0.7x)
+      expect(results[0].retrieval_policy).toBe('normal');
+    });
+
+    it('low confidence items rank lower', () => {
+      storeItem('general', {
+        summary: 'Budget analysis for Q4', type: 'note',
+        embedding: embed(0.5, 0.5, 0.0, 0.0),
+        confidence: 'low',
+      });
+      storeItem('general', {
+        summary: 'Budget review for Q4', type: 'note',
+        embedding: embed(0.5, 0.5, 0.0, 0.0),
+        confidence: 'high',
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid',
+        text: 'budget',
+        embedding: queryEmbed(0.5, 0.5, 0.0, 0.0),
+        limit: 10,
+      });
+
+      expect(results).toHaveLength(2);
+      // High confidence (1.0x) should rank above low (0.6x)
+      expect(results[0].confidence).toBe('high');
+    });
+
+    it('multipliers compound: caveated + low confidence → 0.42x', () => {
+      // Item with both caveated and low confidence
+      storeItem('general', {
+        summary: 'Invoice from unknown vendor', type: 'note',
+        embedding: embed(0.7, 0.3, 0.0, 0.0),
+        retrieval_policy: 'caveated', confidence: 'low', sender_trust: 'unknown',
+      });
+      // Item with normal trust — same FTS and semantic scores
+      storeItem('general', {
+        summary: 'Invoice from our supplier', type: 'note',
+        embedding: embed(0.7, 0.3, 0.0, 0.0),
+        retrieval_policy: 'normal', confidence: 'high', sender_trust: 'self',
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid',
+        text: 'invoice',
+        embedding: queryEmbed(0.7, 0.3, 0.0, 0.0),
+        limit: 10,
+      });
+
+      expect(results).toHaveLength(2);
+      // Trusted item (1.2x) should vastly outrank caveated+low (0.7*0.6 = 0.42x)
+      expect(results[0].sender_trust).toBe('self');
+    });
+
+    it('contact_ring1 gets same boost as self', () => {
+      storeItem('general', {
+        summary: 'Notes from colleague about project', type: 'note',
+        embedding: embed(0.6, 0.4, 0.0, 0.0),
+        sender_trust: 'contact_ring1',
+      });
+      storeItem('general', {
+        summary: 'Notes from stranger about project', type: 'note',
+        embedding: embed(0.6, 0.4, 0.0, 0.0),
+        sender_trust: 'unknown',
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid',
+        text: 'project',
+        embedding: queryEmbed(0.6, 0.4, 0.0, 0.0),
+        limit: 10,
+      });
+
+      expect(results).toHaveLength(2);
+      // Contact ring1 (1.2x) should rank above unknown (1.0x)
+      expect(results[0].sender_trust).toBe('contact_ring1');
+    });
+  });
+
+  describe('search filters', () => {
+    it('type filter returns only matching types', () => {
+      storeItem('general', { summary: 'Budget email from Alice', type: 'email' });
+      storeItem('general', { summary: 'Budget note', type: 'note' });
+      storeItem('general', { summary: 'Budget event', type: 'event' });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'budget', limit: 10,
+        types: ['email'],
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('email');
+    });
+
+    it('type filter with multiple types', () => {
+      storeItem('general', { summary: 'Budget email', type: 'email' });
+      storeItem('general', { summary: 'Budget note', type: 'note' });
+      storeItem('general', { summary: 'Budget event', type: 'event' });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'budget', limit: 10,
+        types: ['email', 'note'],
+      });
+
+      expect(results).toHaveLength(2);
+    });
+
+    it('time range: after filter', () => {
+      storeItem('general', { summary: 'Old item', type: 'note', timestamp: 1000 });
+      storeItem('general', { summary: 'New item', type: 'note', timestamp: 2000 });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'item', limit: 10,
+        after: 1500,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].summary).toBe('New item');
+    });
+
+    it('time range: before filter', () => {
+      storeItem('general', { summary: 'Old item', type: 'note', timestamp: 1000 });
+      storeItem('general', { summary: 'New item', type: 'note', timestamp: 2000 });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'item', limit: 10,
+        before: 1500,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].summary).toBe('Old item');
+    });
+
+    it('time range: after + before combined', () => {
+      storeItem('general', { summary: 'Old item', type: 'note', timestamp: 1000 });
+      storeItem('general', { summary: 'Mid item', type: 'note', timestamp: 1500 });
+      storeItem('general', { summary: 'New item', type: 'note', timestamp: 2000 });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'item', limit: 10,
+        after: 1200, before: 1800,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].summary).toBe('Mid item');
+    });
+
+    it('offset pagination skips first N results', () => {
+      for (let i = 0; i < 5; i++) {
+        storeItem('general', { summary: `Item ${i} matching keyword`, type: 'note' });
+      }
+
+      const page1 = queryVault('general', {
+        mode: 'fts5', text: 'matching', limit: 2,
+      });
+      const page2 = queryVault('general', {
+        mode: 'fts5', text: 'matching', limit: 2, offset: 2,
+      });
+
+      expect(page1).toHaveLength(2);
+      expect(page2).toHaveLength(2);
+      // Pages should not overlap
+      const page1Ids = page1.map(r => r.id);
+      const page2Ids = page2.map(r => r.id);
+      for (const id of page2Ids) {
+        expect(page1Ids).not.toContain(id);
+      }
+    });
+
+    it('filters apply to hybrid search too', () => {
+      storeItem('general', {
+        summary: 'Health email from doctor', type: 'email',
+        embedding: embed(0.9, 0.1, 0.0, 0.0),
+      });
+      storeItem('general', {
+        summary: 'Health note about checkup', type: 'note',
+        embedding: embed(0.8, 0.2, 0.0, 0.0),
+      });
+
+      const results = queryVault('general', {
+        mode: 'hybrid', text: 'health',
+        embedding: queryEmbed(0.9, 0.1, 0.0, 0.0),
+        limit: 10,
+        types: ['note'],
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('note');
+    });
+
+    it('empty types filter returns all types', () => {
+      storeItem('general', { summary: 'A note', type: 'note' });
+      storeItem('general', { summary: 'An email', type: 'email' });
+
+      const results = queryVault('general', {
+        mode: 'fts5', text: 'a', limit: 10,
+        types: [], // empty array = no filter
+      });
+
+      expect(results).toHaveLength(2);
+    });
+  });
+
   describe('cosineSimilarity', () => {
     it('returns 1 for identical vectors', () => {
       const a = new Float32Array([1, 0, 0]);

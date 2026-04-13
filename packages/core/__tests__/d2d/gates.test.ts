@@ -16,6 +16,12 @@ import {
   setScenarioDeny,
   setSharingRestrictions,
   clearGatesState,
+  blockDestination,
+  unblockDestination,
+  trustDestination,
+  untrustDestination,
+  isDestinationBlocked,
+  isDestinationTrusted,
 } from '../../src/d2d/gates';
 
 describe('D2D Egress 4-Gate Enforcement', () => {
@@ -114,6 +120,60 @@ describe('D2D Egress 4-Gate Enforcement', () => {
 
     it('denies if ANY category is restricted (partial deny)', () => {
       expect(checkSharingGate(knownContact, ['general', 'health'])).toBe(false);
+    });
+  });
+
+  describe('blocked/trusted destination lists', () => {
+    const blockedDID = 'did:plc:spammer';
+    const trustedDID = 'did:plc:bestfriend';
+
+    it('blocked destination → denied regardless of contact status', () => {
+      addContact(blockedDID); // even known contacts can be blocked
+      blockDestination(blockedDID);
+      const result = checkEgressGates(blockedDID, 'social.update', []);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('blocked');
+    });
+
+    it('trusted destination → allowed without contact/policy checks', () => {
+      // NOT a known contact, but trusted
+      trustDestination(trustedDID);
+      const result = checkEgressGates(trustedDID, 'social.update', ['health']);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('blocking removes from trusted list', () => {
+      trustDestination('did:plc:flip');
+      blockDestination('did:plc:flip');
+      expect(isDestinationBlocked('did:plc:flip')).toBe(true);
+      expect(isDestinationTrusted('did:plc:flip')).toBe(false);
+    });
+
+    it('trusting removes from blocked list', () => {
+      blockDestination('did:plc:flip2');
+      trustDestination('did:plc:flip2');
+      expect(isDestinationTrusted('did:plc:flip2')).toBe(true);
+      expect(isDestinationBlocked('did:plc:flip2')).toBe(false);
+    });
+
+    it('unblock removes from blocked list', () => {
+      blockDestination('did:plc:temp');
+      unblockDestination('did:plc:temp');
+      expect(isDestinationBlocked('did:plc:temp')).toBe(false);
+    });
+
+    it('untrust removes from trusted list', () => {
+      trustDestination('did:plc:temp2');
+      untrustDestination('did:plc:temp2');
+      expect(isDestinationTrusted('did:plc:temp2')).toBe(false);
+    });
+
+    it('clearGatesState clears destination lists', () => {
+      blockDestination('did:plc:a');
+      trustDestination('did:plc:b');
+      clearGatesState();
+      expect(isDestinationBlocked('did:plc:a')).toBe(false);
+      expect(isDestinationTrusted('did:plc:b')).toBe(false);
     });
   });
 });

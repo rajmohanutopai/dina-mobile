@@ -13,7 +13,7 @@ import { Router, type Request, type Response } from 'express';
 import {
   createPersona, listPersonas, getPersona, openPersona, closePersona,
 } from '../../persona/service';
-import type { PersonaTier } from '../../vault/lifecycle';
+import { autoOpensOnBoot, type PersonaTier } from '../../vault/lifecycle';
 
 const VALID_TIERS = new Set<string>(['default', 'standard', 'sensitive', 'locked']);
 
@@ -77,6 +77,17 @@ export function createPersonaRouter(): Router {
       const body = parseJSON(req);
       const name = String(body.name ?? '');
       if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+
+      // Tier guard: default and standard personas cannot be locked.
+      // They auto-open on boot and should always be accessible.
+      // Matches Go's HandleLockPersona tier check.
+      const persona = getPersona(name);
+      if (persona && autoOpensOnBoot(persona.tier)) {
+        res.status(400).json({
+          error: `Cannot lock "${name}" — ${persona.tier} tier personas auto-open on boot`,
+        });
+        return;
+      }
 
       closePersona(name);
       res.json({ name, locked: true });

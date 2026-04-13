@@ -10,6 +10,7 @@ import {
   isBriefingTime, markBriefingSent,
   registerEngagementProvider, registerApprovalProvider, registerMemoryProvider,
   resetBriefingState,
+  sortBySourcePriority, deduplicateByTitle,
 } from '../../src/briefing/assembly';
 import type { BriefingItem } from '../../src/briefing/assembly';
 import { createReminder, resetReminderState } from '../../../core/src/reminders/service';
@@ -131,6 +132,113 @@ describe('Daily Briefing Assembly', () => {
       markBriefingSent(now);
       const nextDay = now + 23 * 60 * 60 * 1000 + 1000;
       expect(isBriefingTime(8, nextDay)).toBe(true);
+    });
+  });
+
+  describe('source-priority sorting', () => {
+    it('sorts finance before health before rss', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'RSS article', source: 'rss', timestamp: 1000 },
+        { type: 'engagement', title: 'Bank alert', source: 'finance', timestamp: 1000 },
+        { type: 'engagement', title: 'Health update', source: 'health', timestamp: 1000 },
+      ];
+      const sorted = sortBySourcePriority(items);
+      expect(sorted[0].source).toBe('finance');
+      expect(sorted[1].source).toBe('health');
+      expect(sorted[2].source).toBe('rss');
+    });
+
+    it('sorts by timestamp within same priority', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'Old', source: 'health', timestamp: 1000 },
+        { type: 'engagement', title: 'New', source: 'health', timestamp: 2000 },
+      ];
+      const sorted = sortBySourcePriority(items);
+      expect(sorted[0].title).toBe('New');
+      expect(sorted[1].title).toBe('Old');
+    });
+
+    it('treats unknown source as low priority', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'Unknown', source: 'unknown_source', timestamp: 1000 },
+        { type: 'engagement', title: 'Finance', source: 'finance', timestamp: 1000 },
+      ];
+      const sorted = sortBySourcePriority(items);
+      expect(sorted[0].source).toBe('finance');
+    });
+
+    it('handles missing source gracefully', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'No source', timestamp: 1000 },
+        { type: 'engagement', title: 'Health', source: 'health', timestamp: 1000 },
+      ];
+      const sorted = sortBySourcePriority(items);
+      expect(sorted[0].source).toBe('health');
+    });
+
+    it('engagement section is sorted in assembled briefing', () => {
+      registerEngagementProvider(() => [
+        { type: 'engagement', title: 'RSS feed', source: 'rss', timestamp: 1000 },
+        { type: 'engagement', title: 'Bank notification', source: 'bank', timestamp: 1000 },
+        { type: 'engagement', title: 'Calendar event', source: 'calendar', timestamp: 1000 },
+      ]);
+      const briefing = assembleBriefing();
+      expect(briefing).not.toBeNull();
+      expect(briefing!.sections.engagement[0].source).toBe('bank');
+      expect(briefing!.sections.engagement[1].source).toBe('calendar');
+      expect(briefing!.sections.engagement[2].source).toBe('rss');
+    });
+  });
+
+  describe('body text deduplication', () => {
+    it('removes duplicate titles', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'Same item', timestamp: 1000 },
+        { type: 'engagement', title: 'Same item', timestamp: 2000 },
+        { type: 'engagement', title: 'Different item', timestamp: 1500 },
+      ];
+      const deduped = deduplicateByTitle(items);
+      expect(deduped).toHaveLength(2);
+    });
+
+    it('keeps the newest duplicate', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'Dup', timestamp: 1000 },
+        { type: 'engagement', title: 'Dup', timestamp: 2000 },
+      ];
+      const deduped = deduplicateByTitle(items);
+      expect(deduped).toHaveLength(1);
+      expect(deduped[0].timestamp).toBe(2000);
+    });
+
+    it('case-insensitive dedup', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: 'Test Item', timestamp: 1000 },
+        { type: 'engagement', title: 'test item', timestamp: 2000 },
+      ];
+      const deduped = deduplicateByTitle(items);
+      expect(deduped).toHaveLength(1);
+    });
+
+    it('keeps empty titles (no dedup on empty)', () => {
+      const items: BriefingItem[] = [
+        { type: 'engagement', title: '', timestamp: 1000 },
+        { type: 'engagement', title: '', timestamp: 2000 },
+      ];
+      const deduped = deduplicateByTitle(items);
+      expect(deduped).toHaveLength(2);
+    });
+
+    it('dedup applied in assembled briefing', () => {
+      registerEngagementProvider(() => [
+        { type: 'engagement', title: 'Same news', source: 'rss', timestamp: 1000 },
+        { type: 'engagement', title: 'Same news', source: 'feed', timestamp: 2000 },
+        { type: 'engagement', title: 'Unique news', source: 'rss', timestamp: 1500 },
+      ]);
+      const briefing = assembleBriefing();
+      expect(briefing).not.toBeNull();
+      expect(briefing!.sections.engagement).toHaveLength(2);
+      expect(briefing!.totalItems).toBe(2);
     });
   });
 });

@@ -1,0 +1,187 @@
+/**
+ * SQL schema definitions for identity and persona databases.
+ *
+ * Identity DB migrations: contacts, audit, devices, reminders, staging, KV.
+ * Persona DB migrations: vault_items + FTS5.
+ *
+ * Source: packages/fixtures/schema/identity_001.sql, persona_001.sql
+ */
+
+import type { Migration } from './migration';
+
+// ---------------------------------------------------------------
+// Identity DB migrations
+// ---------------------------------------------------------------
+
+export const IDENTITY_MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'initial_identity_schema',
+    sql: `
+      CREATE TABLE IF NOT EXISTS contacts (
+        did TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        trust_level TEXT NOT NULL DEFAULT 'unknown',
+        sharing_tier TEXT NOT NULL DEFAULT 'summary',
+        relationship TEXT NOT NULL DEFAULT 'unknown',
+        data_responsibility TEXT NOT NULL DEFAULT 'external',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS contact_aliases (
+        alias_normalized TEXT PRIMARY KEY,
+        did TEXT NOT NULL REFERENCES contacts(did) ON DELETE CASCADE
+      ) WITHOUT ROWID;
+
+      CREATE INDEX IF NOT EXISTS idx_contact_aliases_did ON contact_aliases(did);
+
+      CREATE TABLE IF NOT EXISTS audit_log (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        resource TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        prev_hash TEXT NOT NULL,
+        entry_hash TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
+
+      CREATE TABLE IF NOT EXISTS paired_devices (
+        device_id TEXT PRIMARY KEY,
+        did TEXT NOT NULL DEFAULT '',
+        public_key_multibase TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'rich',
+        auth_type TEXT NOT NULL DEFAULT 'ed25519',
+        last_seen INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_devices_pubkey ON paired_devices(public_key_multibase);
+      CREATE INDEX IF NOT EXISTS idx_devices_did ON paired_devices(did);
+
+      CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
+        message TEXT NOT NULL,
+        due_at INTEGER NOT NULL,
+        persona TEXT NOT NULL DEFAULT 'general',
+        kind TEXT NOT NULL DEFAULT 'manual',
+        source_item_id TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        recurring TEXT NOT NULL DEFAULT '',
+        timezone TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        completed INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        UNIQUE(source_item_id, kind, due_at, persona)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at) WHERE completed=0;
+      CREATE INDEX IF NOT EXISTS idx_reminders_persona ON reminders(persona);
+      CREATE INDEX IF NOT EXISTS idx_reminders_short_id ON reminders(short_id);
+
+      CREATE TABLE IF NOT EXISTS staging_inbox (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        producer_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'received',
+        persona TEXT NOT NULL DEFAULT '',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        lease_until INTEGER NOT NULL DEFAULT 0,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        data TEXT NOT NULL DEFAULT '{}',
+        source_hash TEXT NOT NULL DEFAULT '',
+        classified_item TEXT,
+        error TEXT,
+        approval_id TEXT,
+        UNIQUE(producer_id, source, source_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_staging_status ON staging_inbox(status);
+      CREATE INDEX IF NOT EXISTS idx_staging_expires ON staging_inbox(expires_at);
+
+      CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL DEFAULT 0
+      ) WITHOUT ROWID
+    `,
+  },
+];
+
+// ---------------------------------------------------------------
+// Persona DB migrations
+// ---------------------------------------------------------------
+
+export const PERSONA_MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'initial_persona_schema',
+    sql: `
+      CREATE TABLE IF NOT EXISTS vault_items (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL DEFAULT 'note',
+        source TEXT NOT NULL DEFAULT '',
+        source_id TEXT NOT NULL DEFAULT '',
+        contact_did TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        metadata TEXT NOT NULL DEFAULT '{}',
+        tags TEXT NOT NULL DEFAULT '[]',
+        content_l0 TEXT NOT NULL DEFAULT '',
+        content_l1 TEXT NOT NULL DEFAULT '',
+        deleted INTEGER NOT NULL DEFAULT 0,
+        timestamp INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        sender TEXT NOT NULL DEFAULT '',
+        sender_trust TEXT NOT NULL DEFAULT 'unknown',
+        source_type TEXT NOT NULL DEFAULT '',
+        confidence TEXT NOT NULL DEFAULT 'medium',
+        retrieval_policy TEXT NOT NULL DEFAULT 'normal',
+        contradicts TEXT NOT NULL DEFAULT '',
+        enrichment_status TEXT NOT NULL DEFAULT 'pending',
+        enrichment_version TEXT NOT NULL DEFAULT '',
+        embedding BLOB
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_vault_items_type ON vault_items(type);
+      CREATE INDEX IF NOT EXISTS idx_vault_items_timestamp ON vault_items(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_vault_items_deleted ON vault_items(deleted);
+      CREATE INDEX IF NOT EXISTS idx_vault_items_sender ON vault_items(sender);
+      CREATE INDEX IF NOT EXISTS idx_vault_items_retrieval ON vault_items(retrieval_policy);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS vault_items_fts USING fts5(
+        summary, body, tags, contact_did, content_l0, content_l1,
+        content='vault_items', content_rowid='rowid',
+        tokenize='unicode61 remove_diacritics 2'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS vault_items_ai AFTER INSERT ON vault_items BEGIN
+        INSERT INTO vault_items_fts(rowid, summary, body, tags, contact_did, content_l0, content_l1)
+        VALUES (new.rowid, new.summary, new.body, new.tags, new.contact_did, new.content_l0, new.content_l1);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS vault_items_ad AFTER DELETE ON vault_items BEGIN
+        INSERT INTO vault_items_fts(vault_items_fts, rowid, summary, body, tags, contact_did, content_l0, content_l1)
+        VALUES ('delete', old.rowid, old.summary, old.body, old.tags, old.contact_did, old.content_l0, old.content_l1);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS vault_items_au AFTER UPDATE ON vault_items BEGIN
+        INSERT INTO vault_items_fts(vault_items_fts, rowid, summary, body, tags, contact_did, content_l0, content_l1)
+        VALUES ('delete', old.rowid, old.summary, old.body, old.tags, old.contact_did, old.content_l0, old.content_l1);
+        INSERT INTO vault_items_fts(rowid, summary, body, tags, contact_did, content_l0, content_l1)
+        VALUES (new.rowid, new.summary, new.body, new.tags, new.contact_did, new.content_l0, new.content_l1);
+      END
+    `,
+  },
+];

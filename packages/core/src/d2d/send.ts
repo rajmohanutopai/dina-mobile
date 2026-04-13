@@ -15,8 +15,9 @@
 
 import { buildMessage, sealMessage, type DinaMessage, type D2DPayload } from './envelope';
 import { checkEgressGates } from './gates';
+import { isValidV1Type } from './families';
 import { appendAudit } from '../audit/service';
-import { deliverMessage, type ServiceType, type DeliveryResult } from '../transport/delivery';
+import { deliverMessage, type ServiceType, type DeliveryResult, type SenderIdentity } from '../transport/delivery';
 import { enqueueMessage } from '../transport/outbox';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -51,6 +52,16 @@ export interface SendResult {
 export async function sendD2D(req: SendRequest): Promise<SendResult> {
   const messageId = `d2d-${bytesToHex(randomBytes(8))}`;
 
+  // 0. V1 type enforcement — reject non-V1 message types before any further processing.
+  // Matches Go's Gate 3 (V1MessageFamilies check in SendMessage).
+  if (!isValidV1Type(req.messageType)) {
+    return {
+      sent: false, messageId, delivered: false, buffered: false, queued: false,
+      deniedAt: 'type_enforcement',
+      error: `Unknown message type "${req.messageType}". Valid V1 types: presence.signal, coordination.request/response, social.update, safety.alert, trust.vouch.request/response`,
+    };
+  }
+
   // 1. Egress 4-gate check
   const gateResult = checkEgressGates(
     req.recipientDID,
@@ -83,8 +94,13 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
 
   // 5. Deliver
   try {
+    const senderIdentity: SenderIdentity = {
+      did: req.senderDID,
+      privateKey: req.senderPrivateKey,
+    };
     const delivery = await deliverMessage(
       req.recipientDID, payloadBytes, req.serviceType, req.endpoint,
+      senderIdentity,
     );
 
     // 7. Audit
@@ -101,7 +117,8 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
     }
 
     // Delivery failed but didn't throw — queue for retry
-    enqueueMessage(req.recipientDID, payloadBytes);
+    // Wrapped in try/catch: enqueueMessage throws on full queue (Fix: Codex #13)
+    try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
       `type=${req.messageType} id=${messageId} error=${delivery.error ?? 'delivery_failed'}`);
     return {
@@ -110,7 +127,7 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
     };
   } catch (err) {
     // 6. Network failure → queue in outbox
-    enqueueMessage(req.recipientDID, payloadBytes);
+    try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
 
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
       `type=${req.messageType} id=${messageId} error=${err instanceof Error ? err.message : 'unknown'}`);

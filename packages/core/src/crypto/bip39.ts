@@ -14,11 +14,28 @@ export function generateMnemonic(): string {
 }
 
 /**
- * Convert a BIP-39 mnemonic to a 64-byte seed.
+ * Convert a BIP-39 mnemonic to a 64-byte PBKDF2 seed.
  * Uses PBKDF2 with empty passphrase (standard BIP-39 behavior).
+ *
+ * NOTE: This returns 64 bytes. For Go-compatible 32-byte master seed,
+ * use mnemonicToEntropy() instead.
  */
 export function mnemonicToSeed(mnemonic: string): Uint8Array {
   return bip39.mnemonicToSeedSync(mnemonic, '');
+}
+
+/**
+ * Convert a BIP-39 mnemonic back to its raw 32-byte entropy.
+ *
+ * This is the Go-compatible master seed: Go validates len(seed)==32
+ * and uses raw entropy directly. The 64-byte PBKDF2 output from
+ * mnemonicToSeed() produces DIFFERENT keys than Go's 32-byte path.
+ *
+ * Use this for all new key derivation to ensure cross-node compatibility:
+ * same mnemonic → same 32-byte entropy → same SLIP-0010 keys → same DID.
+ */
+export function mnemonicToEntropy(mnemonic: string): Uint8Array {
+  return bip39.mnemonicToEntropy(mnemonic, wordlist);
 }
 
 /** Validate a BIP-39 mnemonic (checksum + wordlist check). */
