@@ -15,6 +15,11 @@ describe('Brain Configuration', () => {
       expect(config.serviceKeyDir).toBe('./service_keys');
       expect(config.logLevel).toBe('info');
       expect(config.llmURL).toBeUndefined();
+      expect(config.appviewURL).toBeUndefined();
+      expect(config.pdsURL).toBeUndefined();
+      expect(config.plcURL).toBe('https://plc.directory');
+      expect(config.pdsHandle).toBeUndefined();
+      expect(config.pdsAdminPassword).toBeUndefined();
     });
 
     it('reads DINA_CORE_URL from env', () => {
@@ -52,48 +57,74 @@ describe('Brain Configuration', () => {
       const config = loadBrainConfig({ DINA_BRAIN_PORT: '9200' });
       expect(config.listenPort).toBe(9200);
     });
+
+    it('reads the full test-infra envelope from env', () => {
+      const config = loadBrainConfig({
+        DINA_APPVIEW_URL: 'https://test-appview.dinakernel.com',
+        DINA_PDS_URL: 'https://test-pds.dinakernel.com',
+        DINA_PLC_URL: 'https://plc.directory',
+        DINA_PDS_HANDLE: 'busdriver.test-pds.dinakernel.com',
+        DINA_PDS_ADMIN_PASSWORD: 'hunter2',
+      });
+      expect(config.appviewURL).toBe('https://test-appview.dinakernel.com');
+      expect(config.pdsURL).toBe('https://test-pds.dinakernel.com');
+      expect(config.plcURL).toBe('https://plc.directory');
+      expect(config.pdsHandle).toBe('busdriver.test-pds.dinakernel.com');
+      expect(config.pdsAdminPassword).toBe('hunter2');
+    });
   });
 
   describe('validateBrainConfig', () => {
+    const validConfig = {
+      coreURL: 'http://localhost:8100',
+      listenPort: 8200,
+      serviceKeyDir: '/keys',
+      logLevel: 'info',
+      plcURL: 'https://plc.directory',
+    };
+
     it('accepts valid config', () => {
-      const errors = validateBrainConfig({
-        coreURL: 'http://localhost:8100',
-        listenPort: 8200,
-        serviceKeyDir: '/keys',
-        logLevel: 'info',
-      });
-      expect(errors).toEqual([]);
+      expect(validateBrainConfig(validConfig)).toEqual([]);
     });
 
     it('rejects invalid core URL', () => {
-      const errors = validateBrainConfig({
-        coreURL: 'not-a-url',
-        listenPort: 8200,
-        serviceKeyDir: '/keys',
-        logLevel: 'info',
-      });
+      const errors = validateBrainConfig({ ...validConfig, coreURL: 'not-a-url' });
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0]).toContain('coreURL');
     });
 
     it('rejects empty service key dir', () => {
-      const errors = validateBrainConfig({
-        coreURL: 'http://localhost:8100',
-        listenPort: 8200,
-        serviceKeyDir: '',
-        logLevel: 'info',
-      });
-      expect(errors.some(e => e.includes('serviceKeyDir'))).toBe(true);
+      const errors = validateBrainConfig({ ...validConfig, serviceKeyDir: '' });
+      expect(errors.some((e) => e.includes('serviceKeyDir'))).toBe(true);
     });
 
     it('rejects invalid port', () => {
+      const errors = validateBrainConfig({ ...validConfig, listenPort: 0 });
+      expect(errors.some((e) => e.includes('listenPort'))).toBe(true);
+    });
+
+    it('accepts valid optional test-infra URLs', () => {
       const errors = validateBrainConfig({
-        coreURL: 'http://localhost:8100',
-        listenPort: 0,
-        serviceKeyDir: '/keys',
-        logLevel: 'info',
+        ...validConfig,
+        appviewURL: 'https://test-appview.dinakernel.com',
+        pdsURL: 'https://test-pds.dinakernel.com',
       });
-      expect(errors.some(e => e.includes('listenPort'))).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects malformed appviewURL', () => {
+      const errors = validateBrainConfig({ ...validConfig, appviewURL: 'bad' });
+      expect(errors.some((e) => e.includes('appviewURL'))).toBe(true);
+    });
+
+    it('rejects malformed pdsURL', () => {
+      const errors = validateBrainConfig({ ...validConfig, pdsURL: 'bad' });
+      expect(errors.some((e) => e.includes('pdsURL'))).toBe(true);
+    });
+
+    it('rejects empty plcURL', () => {
+      const errors = validateBrainConfig({ ...validConfig, plcURL: '' });
+      expect(errors.some((e) => e.includes('plcURL'))).toBe(true);
     });
   });
 });

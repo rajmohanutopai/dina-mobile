@@ -35,8 +35,14 @@ export interface GeminiModel {
   embedContent(request: GeminiEmbedRequest): Promise<GeminiEmbedResult>;
 }
 
+/** One part of a Gemini message — text, function call, or function response. */
+export type GeminiRequestPart =
+  | { text: string }
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: Record<string, unknown> } };
+
 export interface GeminiRequest {
-  contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  contents: Array<{ role: 'user' | 'model'; parts: GeminiRequestPart[] }>;
   generationConfig?: {
     maxOutputTokens?: number;
     temperature?: number;
@@ -114,13 +120,53 @@ export class GeminiAdapter implements LLMProvider {
       ...(systemInstruction ? { systemInstruction } : {}),
     });
 
-    // Map messages: filter system, map 'assistant' → 'model'
+    // Map messages to Gemini's content shape. Three cases beyond plain text:
+    //   - assistant + toolCalls  → role='model' with functionCall parts
+    //   - role='tool'            → role='user'  with functionResponse part
+    //   - system                 → filtered (already surfaced as systemInstruction)
     const contents = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({
-        role: (m.role === 'assistant' ? 'model' : 'user') as 'user' | 'model',
-        parts: [{ text: m.content }],
-      }));
+      .filter((m) => m.role !== 'system')
+      .map((m) => {
+        if (m.role === 'tool') {
+          // Tool result round-trip. `content` carries the JSON-stringified
+          // result; `toolName` is the tool that was invoked.
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(m.content);
+          } catch {
+            parsed = { result: m.content };
+          }
+          return {
+            role: 'user' as const,
+            parts: [{
+              functionResponse: {
+                name: m.toolName ?? '',
+                response: parsed as Record<string, unknown>,
+              },
+            }],
+          };
+        }
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          const parts: GeminiRequestPart[] = [];
+          if (m.content !== '') parts.push({ text: m.content });
+          for (const tc of m.toolCalls) {
+            parts.push({
+              functionCall: {
+                name: tc.name,
+                args: tc.arguments,
+              },
+            });
+          }
+          return {
+            role: 'model' as const,
+            parts,
+          };
+        }
+        return {
+          role: (m.role === 'assistant' ? 'model' : 'user') as 'user' | 'model',
+          parts: [{ text: m.content }],
+        };
+      });
 
     const request: GeminiRequest = {
       contents,

@@ -124,13 +124,18 @@ describe('Schema definitions', () => {
   it('identity schema can be applied to in-memory adapter', () => {
     const db = new InMemoryDatabaseAdapter();
     const applied = applyMigrations(db, IDENTITY_MIGRATIONS);
-    expect(applied).toBe(1);
+    expect(applied).toBe(IDENTITY_MIGRATIONS.length);
     expect(db.hasTable('contacts')).toBe(true);
     expect(db.hasTable('audit_log')).toBe(true);
     expect(db.hasTable('paired_devices')).toBe(true);
     expect(db.hasTable('reminders')).toBe(true);
     expect(db.hasTable('staging_inbox')).toBe(true);
     expect(db.hasTable('kv_store')).toBe(true);
+    // v2 added for Bus Driver Scenario (commit f3a1bc7).
+    expect(db.hasTable('service_config')).toBe(true);
+    // v3 added for WS2 workflow tasks (commit 9c01611).
+    expect(db.hasTable('workflow_tasks')).toBe(true);
+    expect(db.hasTable('workflow_events')).toBe(true);
   });
 
   it('persona migrations are well-formed', () => {

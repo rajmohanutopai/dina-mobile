@@ -17,6 +17,7 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     Vault: '\u229E',      // squared plus (vault)
     People: '\u2603',     // placeholder — will swap
     Reminders: '\u25CB',  // circle
+    Approvals: '\u2713',  // check mark (pending review)
     Settings: '\u2699',   // gear
   };
 
@@ -26,6 +27,7 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     Vault: 'vault',
     People: 'people',
     Reminders: 'bell',
+    Approvals: 'approvals',
     Settings: 'gear',
   };
 
@@ -120,10 +122,25 @@ export default function RootLayout() {
         }}
       />
       <Tabs.Screen
+        name="approvals"
+        options={{
+          title: 'Approvals',
+          tabBarIcon: ({ focused }) => <TabIcon name="Approvals" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
           tabBarIcon: ({ focused }) => <TabIcon name="Settings" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
+        name="service-settings"
+        options={{
+          title: 'Service Sharing',
+          // Hidden from the tab bar — reached via drill-down from Settings.
+          href: null,
         }}
       />
     </Tabs>

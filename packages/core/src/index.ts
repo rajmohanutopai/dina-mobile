@@ -12,6 +12,133 @@ export type { DIDDocument, VerificationMethod, ServiceEndpoint } from './identit
 export * from './d2d/envelope';
 export type { DinaMessage, D2DPayload } from './d2d/envelope';
 export * from './d2d/families';
+export * from './d2d/service_bodies';
+export type {
+  ServiceQueryBody,
+  ServiceResponseBody,
+  ServiceResponseStatus,
+} from './d2d/service_bodies';
+export * from './service/query_window';
+export type { QueryWindowOptions } from './service/query_window';
+export {
+  providerWindow,
+  requesterWindow,
+  setProviderWindow,
+  releaseProviderWindow,
+  setRequesterWindow,
+  startServiceWindowCleanup,
+  stopServiceWindowCleanup,
+  resetServiceWindows,
+  DEFAULT_WINDOW_CLEANUP_INTERVAL_MS,
+} from './service/windows';
+export {
+  ConfigEventChannel,
+  configEventChannel,
+  setConfigEventChannel,
+  resetConfigEventChannel,
+} from './service/config_event_channel';
+export type {
+  ConfigChangedEvent,
+  ConfigEventListener,
+  ConfigEventChannelOptions,
+  ConfigEventKind,
+} from './service/config_event_channel';
+export {
+  evaluateServiceEgressBypass,
+  evaluateServiceIngressBypass,
+} from './service/bypass';
+export {
+  AllowedOrigins,
+  isAllowedOrigin,
+  isTerminal,
+  isValidTransition,
+  ValidTransitions,
+  WorkflowTaskKind,
+  WorkflowTaskPriority,
+  WorkflowTaskState,
+} from './workflow/domain';
+export type {
+  WorkflowTask,
+  WorkflowEvent,
+} from './workflow/domain';
+export {
+  WorkflowConflictError,
+  SQLiteWorkflowRepository,
+  InMemoryWorkflowRepository,
+  setWorkflowRepository,
+  getWorkflowRepository,
+} from './workflow/repository';
+export type { WorkflowRepository } from './workflow/repository';
+export {
+  WorkflowService,
+  WorkflowValidationError,
+  WorkflowTransitionError,
+  setWorkflowService,
+  getWorkflowService,
+} from './workflow/service';
+export type {
+  WorkflowServiceOptions,
+  CreateWorkflowTaskInput,
+  ResponseBridgeSender,
+  ServiceQueryBridgeContext,
+} from './workflow/service';
+export { makeServiceResponseBridgeSender } from './workflow/response_bridge_sender';
+export type {
+  ResponseBridgeD2DSender,
+  MakeResponseBridgeSenderOptions,
+} from './workflow/response_bridge_sender';
+export { LeaseExpirySweeper } from './workflow/lease_expiry_sweeper';
+export type {
+  LeaseExpirySweeperOptions,
+  LeaseExpirySweepResult,
+} from './workflow/lease_expiry_sweeper';
+export {
+  setServiceQuerySender,
+  getServiceQuerySender,
+  canonicalJSON as serviceQueryCanonicalJSON,
+  computeIdempotencyKey as computeServiceQueryIdempotencyKey,
+} from './server/routes/service_query';
+export type { ServiceQuerySender } from './server/routes/service_query';
+export {
+  setServiceRespondSender,
+  getServiceRespondSender,
+} from './server/routes/service_respond';
+export type { ServiceRespondSender } from './server/routes/service_respond';
+export type {
+  ServiceBypassDecision,
+  BypassDenyReason,
+  PublicServiceResolver,
+  LocalCapabilityChecker,
+  RequesterWindowView,
+} from './service/bypass';
+export { AppViewServiceResolver } from './appview/service_resolver';
+export type {
+  AppViewServiceResolverOptions,
+  IsPublicResult,
+} from './appview/service_resolver';
+export {
+  getServiceConfig,
+  setServiceConfig,
+  clearServiceConfig,
+  onServiceConfigChanged,
+  isCapabilityConfigured,
+  validateServiceConfig,
+  resetServiceConfigState,
+} from './service/service_config';
+export type {
+  ServiceConfig,
+  ServiceCapabilityConfig,
+  ServiceCapabilitySchemas,
+  ServiceResponsePolicy,
+  ConfigChangeListener,
+} from './service/service_config';
+export {
+  setServiceConfigRepository,
+  getServiceConfigRepository,
+  SQLiteServiceConfigRepository,
+  InMemoryServiceConfigRepository,
+} from './service/service_config_repository';
+export type { ServiceConfigRepository } from './service/service_config_repository';
 export * from './d2d/gates';
 export type { EgressCheckResult } from './d2d/gates';
 export * from './d2d/signature';

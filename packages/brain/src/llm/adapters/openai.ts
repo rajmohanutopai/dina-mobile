@@ -34,7 +34,16 @@ export interface OpenAIClient {
 
 export interface OpenAIChatParams {
   model: string;
-  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+      id: string;
+      type: 'function';
+      function: { name: string; arguments: string };
+    }>;
+  }>;
   max_tokens?: number;
   temperature?: number;
   tools?: Array<{
@@ -105,14 +114,49 @@ export class OpenAIAdapter implements LLMProvider {
     const model = options?.model ?? this.defaultModel;
     const maxTokens = options?.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-    // Build messages array (OpenAI supports system role natively)
-    const apiMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+    // Build messages array (OpenAI supports system role natively).
+    // Tool-role messages become `role: 'tool'` entries with `tool_call_id`.
+    // Assistant messages with prior toolCalls carry a `tool_calls` field so
+    // OpenAI sees the prior invocation before the tool response.
+    const apiMessages: Array<{
+      role: 'system' | 'user' | 'assistant' | 'tool';
+      content: string;
+      tool_call_id?: string;
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: { name: string; arguments: string };
+      }>;
+    }> = [];
 
     if (options?.systemPrompt) {
       apiMessages.push({ role: 'system', content: options.systemPrompt });
     }
 
     for (const m of messages) {
+      if (m.role === 'tool') {
+        apiMessages.push({
+          role: 'tool',
+          content: m.content,
+          tool_call_id: m.toolCallId ?? '',
+        });
+        continue;
+      }
+      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        apiMessages.push({
+          role: 'assistant',
+          content: m.content,
+          tool_calls: m.toolCalls.map((tc, i) => ({
+            id: tc.id ?? `call_${i}`,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        });
+        continue;
+      }
       apiMessages.push({ role: m.role, content: m.content });
     }
 

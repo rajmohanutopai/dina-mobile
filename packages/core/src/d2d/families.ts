@@ -1,7 +1,7 @@
 /**
  * D2D V1 message families — type validation and vault-item-type mapping.
  *
- * Seven message types defined by the V1 protocol:
+ * Nine message types defined by the V1 protocol:
  *   presence.signal       → never stored (ephemeral, online/typing indicator)
  *   coordination.request  → stored (meeting, scheduling)
  *   coordination.response → stored (reply to coordination)
@@ -9,36 +9,55 @@
  *   safety.alert          → always passes (cannot be blocked by policy)
  *   trust.vouch.request   → stored (identity verification request)
  *   trust.vouch.response  → stored as "trust_attestation"
+ *   service.query         → never stored (ephemeral, public-service query)
+ *   service.response      → never stored (ephemeral, public-service response)
  *
- * Source: core/internal/domain/d2d.go
+ * Source: core/internal/domain/d2d.go, core/internal/domain/message.go
  */
 
+// Message-type string constants, mirrors main dina `MsgType*`.
+export const MsgTypePresenceSignal = 'presence.signal' as const;
+export const MsgTypeCoordinationRequest = 'coordination.request' as const;
+export const MsgTypeCoordinationResponse = 'coordination.response' as const;
+export const MsgTypeSocialUpdate = 'social.update' as const;
+export const MsgTypeSafetyAlert = 'safety.alert' as const;
+export const MsgTypeTrustVouchRequest = 'trust.vouch.request' as const;
+export const MsgTypeTrustVouchResponse = 'trust.vouch.response' as const;
+export const MsgTypeServiceQuery = 'service.query' as const;
+export const MsgTypeServiceResponse = 'service.response' as const;
+
 /** All valid V1 message types. */
-const V1_TYPES = new Set([
-  'presence.signal',
-  'coordination.request',
-  'coordination.response',
-  'social.update',
-  'safety.alert',
-  'trust.vouch.request',
-  'trust.vouch.response',
+const V1_TYPES = new Set<string>([
+  MsgTypePresenceSignal,
+  MsgTypeCoordinationRequest,
+  MsgTypeCoordinationResponse,
+  MsgTypeSocialUpdate,
+  MsgTypeSafetyAlert,
+  MsgTypeTrustVouchRequest,
+  MsgTypeTrustVouchResponse,
+  MsgTypeServiceQuery,
+  MsgTypeServiceResponse,
 ]);
 
 /**
  * Mapping from D2D message type to vault item type.
  * Types not in this map are stored with their original message type as the item type.
- * presence.signal is never stored at all.
+ * Ephemeral types (presence.signal, service.query, service.response) are never stored.
  */
 const VAULT_TYPE_MAP: Record<string, string> = {
-  'social.update':         'relationship_note',
-  'trust.vouch.response':  'trust_attestation',
+  [MsgTypeSocialUpdate]:        'relationship_note',
+  [MsgTypeTrustVouchResponse]:  'trust_attestation',
 };
 
 /** Types that are never stored (ephemeral). */
-const EPHEMERAL_TYPES = new Set(['presence.signal']);
+const EPHEMERAL_TYPES = new Set<string>([
+  MsgTypePresenceSignal,
+  MsgTypeServiceQuery,
+  MsgTypeServiceResponse,
+]);
 
 /** Types that cannot be blocked by sharing policy (always delivered). */
-const ALWAYS_PASS_TYPES = new Set(['safety.alert']);
+const ALWAYS_PASS_TYPES = new Set<string>([MsgTypeSafetyAlert]);
 
 /**
  * Message type → scenario mapping for scenario-policy gating.
@@ -47,17 +66,27 @@ const ALWAYS_PASS_TYPES = new Set(['safety.alert']);
  * Source: Go domain/message.go MsgTypeToScenario()
  */
 const TYPE_TO_SCENARIO: Record<string, string> = {
-  'presence.signal':        'presence',
-  'coordination.request':   'coordination',
-  'coordination.response':  'coordination',
-  'social.update':          'social',
-  'safety.alert':           'safety',
-  'trust.vouch.request':    'trust',
-  'trust.vouch.response':   'trust',
+  [MsgTypePresenceSignal]:        'presence',
+  [MsgTypeCoordinationRequest]:   'coordination',
+  [MsgTypeCoordinationResponse]:  'coordination',
+  [MsgTypeSocialUpdate]:          'social',
+  [MsgTypeSafetyAlert]:           'safety',
+  [MsgTypeTrustVouchRequest]:     'trust',
+  [MsgTypeTrustVouchResponse]:    'trust',
+  [MsgTypeServiceQuery]:          'service',
+  [MsgTypeServiceResponse]:       'service',
 };
 
 /** Maximum D2D message body size in bytes (256 KB). */
 export const MAX_MESSAGE_BODY_SIZE = 256 * 1024;
+
+/**
+ * Maximum TTL (seconds) for `service.query` / `service.response` messages.
+ * 300 seconds = 5 minutes. Caller-provided values outside (0, 300] are rejected.
+ *
+ * Source: Go domain/message.go `MaxServiceTTL = 300`.
+ */
+export const MAX_SERVICE_TTL = 300;
 
 /**
  * Check if a message type string is a valid V1 family.

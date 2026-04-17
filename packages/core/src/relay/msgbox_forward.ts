@@ -105,7 +105,8 @@ export async function postToForward(
       ...headers,
       'Content-Type': 'application/octet-stream',
     },
-    body: payload,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    body: payload as any,
   });
 
   if (!response.ok) {

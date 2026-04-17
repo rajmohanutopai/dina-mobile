@@ -11,7 +11,10 @@ import { isValidV1Type, mapToVaultItemType, shouldStore, alwaysPasses } from '..
 import {
   D2D_V1_MESSAGE_TYPES,
   D2D_MEMORY_TYPE_MAP,
+  D2D_EPHEMERAL_MESSAGE_TYPES,
 } from '@dina/test-harness';
+
+const EPHEMERAL = new Set<string>(D2D_EPHEMERAL_MESSAGE_TYPES);
 
 describe('D2D V1 Message Families', () => {
   describe('isValidV1Type', () => {
@@ -47,6 +50,14 @@ describe('D2D V1 Message Families', () => {
       expect(mapToVaultItemType('presence.signal')).toBeNull();
     });
 
+    it('returns null for service.query (ephemeral)', () => {
+      expect(mapToVaultItemType('service.query')).toBeNull();
+    });
+
+    it('returns null for service.response (ephemeral)', () => {
+      expect(mapToVaultItemType('service.response')).toBeNull();
+    });
+
     // Verify all documented mappings from test harness
     for (const [msgType, vaultType] of Object.entries(D2D_MEMORY_TYPE_MAP)) {
       it(`maps ${msgType} → ${vaultType}`, () => {
@@ -61,11 +72,13 @@ describe('D2D V1 Message Families', () => {
   });
 
   describe('shouldStore', () => {
-    it('returns false for presence.signal', () => {
-      expect(shouldStore('presence.signal')).toBe(false);
-    });
+    for (const msgType of D2D_EPHEMERAL_MESSAGE_TYPES) {
+      it(`returns false for ephemeral "${msgType}"`, () => {
+        expect(shouldStore(msgType)).toBe(false);
+      });
+    }
 
-    const storedTypes = D2D_V1_MESSAGE_TYPES.filter(t => t !== 'presence.signal');
+    const storedTypes = D2D_V1_MESSAGE_TYPES.filter(t => !EPHEMERAL.has(t));
     for (const msgType of storedTypes) {
       it(`returns true for "${msgType}"`, () => {
         expect(shouldStore(msgType)).toBe(true);

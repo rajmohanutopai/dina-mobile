@@ -15,12 +15,25 @@
 
 import { buildMessage, sealMessage, type DinaMessage, type D2DPayload } from './envelope';
 import { checkEgressGates } from './gates';
-import { isValidV1Type } from './families';
+import {
+  isValidV1Type,
+  MsgTypeServiceQuery,
+  MsgTypeServiceResponse,
+} from './families';
 import { appendAudit } from '../audit/service';
 import { deliverMessage, type ServiceType, type DeliveryResult, type SenderIdentity } from '../transport/delivery';
 import { enqueueMessage } from '../transport/outbox';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import {
+  evaluateServiceEgressBypass,
+  type PublicServiceResolver,
+  type ServiceBypassDecision,
+} from '../service/bypass';
+import {
+  providerWindow,
+  setRequesterWindow,
+} from '../service/windows';
 
 export interface SendRequest {
   recipientDID: string;
@@ -32,6 +45,14 @@ export interface SendRequest {
   serviceType: ServiceType;
   endpoint: string;
   dataCategories?: string[];
+  /**
+   * AppView resolver used ONLY for `service.query` egress: when the
+   * recipient is a published public-service DID, the contact gate is
+   * bypassed. Leave `undefined` to skip the check (existing behaviour for
+   * all non-service traffic; service.query without a resolver is still
+   * gated by the contact check).
+   */
+  publicServiceResolver?: PublicServiceResolver;
 }
 
 export interface SendResult {
@@ -62,20 +83,84 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
     };
   }
 
-  // 1. Egress 4-gate check
-  const gateResult = checkEgressGates(
-    req.recipientDID,
-    req.messageType,
-    req.dataCategories ?? [],
-  );
-
-  if (!gateResult.allowed) {
+  // 1a. Public-service bypass (service.query / service.response).
+  //
+  // `bypass` is null for non-service traffic. For service traffic:
+  //   - `allow`: skip the contact gate (recipient is a registered public
+  //     service OR we're replying with a pre-reserved provider window).
+  //   - `deny`: short-circuit with the audit detail; the caller sees a
+  //     denied SendResult and the contact gate never runs.
+  const bypass = await evaluateServiceBypass(req);
+  if (bypass !== null && bypass.kind === 'deny') {
     appendAudit(req.senderDID, 'd2d_send_denied', req.recipientDID,
-      `type=${req.messageType} denied_at=${gateResult.deniedAt}`);
+      `type=${req.messageType} denied_at=service_bypass reason=${bypass.reason}`);
     return {
       sent: false, messageId, delivered: false, buffered: false, queued: false,
-      deniedAt: gateResult.deniedAt,
+      deniedAt: 'service_bypass',
+      error: bypass.detail,
     };
+  }
+  const serviceAllowBypass = bypass !== null && bypass.kind === 'allow';
+
+  // 1b. For `service.response` egress we must reserve the provider window
+  //     BEFORE sending; otherwise two concurrent responses would both pass.
+  let providerReservation: ProviderReservation | null = null;
+  if (
+    req.messageType === MsgTypeServiceResponse &&
+    serviceAllowBypass &&
+    bypass !== null &&
+    bypass.kind === 'allow'
+  ) {
+    const body = bypass.body as { query_id: string; capability: string };
+    const reserved = providerWindow().reserve(
+      req.recipientDID, body.query_id, body.capability,
+    );
+    if (!reserved) {
+      appendAudit(req.senderDID, 'd2d_send_denied', req.recipientDID,
+        `type=${req.messageType} denied_at=service_bypass reason=no_window`);
+      return {
+        sent: false, messageId, delivered: false, buffered: false, queued: false,
+        deniedAt: 'service_bypass',
+        error: 'no provider window to reserve',
+      };
+    }
+    providerReservation = {
+      peerDID: req.recipientDID,
+      queryID: body.query_id,
+      capability: body.capability,
+    };
+  }
+
+  // 2. Egress 4-gate check (skipped when the service bypass allowed the send).
+  if (!serviceAllowBypass) {
+    const gateResult = checkEgressGates(
+      req.recipientDID,
+      req.messageType,
+      req.dataCategories ?? [],
+    );
+
+    if (!gateResult.allowed) {
+      appendAudit(req.senderDID, 'd2d_send_denied', req.recipientDID,
+        `type=${req.messageType} denied_at=${gateResult.deniedAt}`);
+      return {
+        sent: false, messageId, delivered: false, buffered: false, queued: false,
+        deniedAt: gateResult.deniedAt,
+      };
+    }
+  }
+
+  // 1c. For `service.query` egress we open the requester-side window so
+  //     that the eventual `service.response` is authorised on ingress.
+  if (
+    req.messageType === MsgTypeServiceQuery &&
+    serviceAllowBypass &&
+    bypass !== null &&
+    bypass.kind === 'allow'
+  ) {
+    const body = bypass.body as { query_id: string; capability: string; ttl_seconds: number };
+    setRequesterWindow(
+      req.recipientDID, body.query_id, body.capability, body.ttl_seconds,
+    );
   }
 
   // 2. Build message
@@ -108,6 +193,7 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
       `type=${req.messageType} id=${messageId} delivered=${delivery.delivered}`);
 
     if (delivery.delivered || delivery.buffered) {
+      commitProviderReservation(providerReservation);
       return {
         sent: true, messageId,
         delivered: delivery.delivered,
@@ -116,8 +202,8 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
       };
     }
 
-    // Delivery failed but didn't throw — queue for retry
-    // Wrapped in try/catch: enqueueMessage throws on full queue (Fix: Codex #13)
+    // Delivery failed but didn't throw — queue for retry.
+    releaseProviderReservation(providerReservation);
     try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
       `type=${req.messageType} id=${messageId} error=${delivery.error ?? 'delivery_failed'}`);
@@ -127,6 +213,7 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
     };
   } catch (err) {
     // 6. Network failure → queue in outbox
+    releaseProviderReservation(providerReservation);
     try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
 
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
@@ -137,4 +224,57 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/** Narrow type for the `(peerDID, queryID, capability)` triple carried through the send pipeline. */
+type ProviderReservation = { peerDID: string; queryID: string; capability: string };
+
+/** Commit a provider-window reservation on successful delivery. No-op when unset. */
+function commitProviderReservation(r: ProviderReservation | null): void {
+  if (r === null) return;
+  // Consume the one-shot authorisation exactly when we succeed.
+  providerWindow().commit(r.peerDID, r.queryID, r.capability);
+}
+
+/** Release a provider-window reservation on any failure so a retry can re-reserve. */
+function releaseProviderReservation(r: ProviderReservation | null): void {
+  if (r === null) return;
+  // Release (not commit) so the entry stays live for a retry / parallel
+  // response. If we committed here, the next attempt would see no window.
+  providerWindow().release(r.peerDID, r.queryID, r.capability);
+}
+
+/**
+ * Run the service-bypass decision layer for service.* message types.
+ *
+ * Returns `null` for:
+ *   - Non-service traffic (existing gate logic applies).
+ *   - `service.query` without a resolver: absence of the resolver means the
+ *     caller hasn't asked for public-service bypass, so the normal contact
+ *     gate handles it. This prevents a missing-resolver footgun from
+ *     silently bypassing the contact check.
+ *
+ * For `service.response` the bypass runs unconditionally — the authorisation
+ * comes from the provider window, not from AppView.
+ */
+async function evaluateServiceBypass(req: SendRequest): Promise<ServiceBypassDecision | null> {
+  if (req.messageType === MsgTypeServiceQuery) {
+    if (req.publicServiceResolver === undefined) return null;
+    const decision = await evaluateServiceEgressBypass(
+      req.messageType,
+      req.recipientDID,
+      req.body,
+      req.publicServiceResolver,
+    );
+    return decision.kind === 'not-service' ? null : decision;
+  }
+  if (req.messageType === MsgTypeServiceResponse) {
+    const decision = await evaluateServiceEgressBypass(
+      req.messageType,
+      req.recipientDID,
+      req.body,
+    );
+    return decision.kind === 'not-service' ? null : decision;
+  }
+  return null;
 }

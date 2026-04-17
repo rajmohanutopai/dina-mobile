@@ -5,20 +5,27 @@
  * Adapted from server config for mobile (no Docker-specific settings).
  *
  * Environment variables:
- *   DINA_CORE_URL        → listenAddr (default: ":8100")
- *   DINA_BRAIN_URL       → brainURL (default: "http://localhost:8200")
- *   DINA_VAULT_PATH      → vaultPath (default: "./data")
- *   DINA_SERVICE_KEY_DIR → serviceKeyDir (default: "./service_keys")
- *   DINA_SECURITY_MODE   → securityMode (default: "security")
- *   DINA_SESSION_TTL     → sessionTTL (default: 86400)
- *   DINA_RATE_LIMIT      → rateLimit (default: 50)
- *   DINA_SPOOL_MAX       → spoolMaxMBMB (default: 500, in megabytes)
- *   DINA_MSGBOX_URL      → msgboxURL (optional)
+ *   DINA_CORE_URL            → listenAddr (default: ":8100")
+ *   DINA_BRAIN_URL           → brainURL (default: "http://localhost:8200")
+ *   DINA_VAULT_PATH          → vaultPath (default: "./data")
+ *   DINA_SERVICE_KEY_DIR     → serviceKeyDir (default: "./service_keys")
+ *   DINA_SECURITY_MODE       → securityMode (default: "security")
+ *   DINA_SESSION_TTL         → sessionTTL (default: 86400)
+ *   DINA_RATE_LIMIT          → rateLimit (default: 50)
+ *   DINA_SPOOL_MAX           → spoolMaxMB (default: 500, in megabytes)
+ *   DINA_MSGBOX_URL          → msgboxURL (optional)
+ *   DINA_APPVIEW_URL         → appviewURL (optional)
+ *   DINA_PDS_URL             → pdsURL (optional)
+ *   DINA_PLC_URL             → plcURL (optional, default "https://plc.directory")
+ *   DINA_PDS_HANDLE          → pdsHandle (optional, e.g. "busdriver.test-pds.dinakernel.com")
+ *   DINA_PDS_ADMIN_PASSWORD  → pdsAdminPassword (optional, for first-run account creation)
  *
- * Source: core/test/config_test.go
+ * Source: core/test/config_test.go + docker-compose-test-stack.yml
  */
 
 import { CORE_DEFAULT_PORT, DEFAULT_BRAIN_URL } from '../constants';
+
+export const DEFAULT_PLC_URL = 'https://plc.directory';
 
 export interface CoreConfig {
   listenAddr: string;
@@ -30,6 +37,11 @@ export interface CoreConfig {
   rateLimit: number;
   spoolMaxMB: number;
   msgboxURL?: string;
+  appviewURL?: string;
+  pdsURL?: string;
+  plcURL: string;
+  pdsHandle?: string;
+  pdsAdminPassword?: string;
 }
 
 /** Default values for all config fields. */
@@ -42,6 +54,7 @@ const DEFAULTS: CoreConfig = {
   sessionTTL: 86400,
   rateLimit: 50,
   spoolMaxMB: 500,
+  plcURL: DEFAULT_PLC_URL,
 };
 
 /**
@@ -67,6 +80,11 @@ export function loadConfig(env?: Record<string, string | undefined>): CoreConfig
     rateLimit: parseIntOrDefault(e.DINA_RATE_LIMIT, DEFAULTS.rateLimit),
     spoolMaxMB: parseIntOrDefault(e.DINA_SPOOL_MAX, DEFAULTS.spoolMaxMB),
     msgboxURL: e.DINA_MSGBOX_URL,
+    appviewURL: e.DINA_APPVIEW_URL,
+    pdsURL: e.DINA_PDS_URL,
+    plcURL: e.DINA_PLC_URL ?? DEFAULTS.plcURL,
+    pdsHandle: e.DINA_PDS_HANDLE,
+    pdsAdminPassword: e.DINA_PDS_ADMIN_PASSWORD,
   };
 }
 
@@ -113,6 +131,23 @@ export function validateConfig(config: CoreConfig): string[] {
   if (config.msgboxURL && !isValidURL(config.msgboxURL)) {
     errors.push(`msgboxURL is not a valid URL: "${config.msgboxURL}"`);
   }
+
+  if (config.appviewURL && !isValidURL(config.appviewURL)) {
+    errors.push(`appviewURL is not a valid URL: "${config.appviewURL}"`);
+  }
+
+  if (config.pdsURL && !isValidURL(config.pdsURL)) {
+    errors.push(`pdsURL is not a valid URL: "${config.pdsURL}"`);
+  }
+
+  if (!config.plcURL) {
+    errors.push('plcURL is required');
+  } else if (!isValidURL(config.plcURL)) {
+    errors.push(`plcURL is not a valid URL: "${config.plcURL}"`);
+  }
+
+  // pdsHandle and pdsAdminPassword: no format check — Handle is a string
+  // the PDS validates, and password is opaque. Both optional.
 
   return errors;
 }

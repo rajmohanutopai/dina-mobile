@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dina Mobile — Architecture</title>
+<style>
+:root {
+  --bg: #FAF8F5;
+  --bg-alt: #F0EDE8;
+  --card: #FFFFFF;
+  --text: #1C1917;
+  --text-muted: #78716C;
+  --text-dim: #A8A29E;
+  --border: rgba(0,0,0,0.08);
+  --border-strong: rgba(0,0,0,0.16);
+  --accent: #1C1917;
+  --core: #2563EB;
+  --brain: #059669;
+  --app: #D97706;
+  --ext: #7C3AED;
+  --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 2px 12px rgba(0,0,0,0.03);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); font-size: 14px; line-height: 1.5; }
+a { color: inherit; }
+
+header {
+  position: sticky; top: 0; z-index: 10;
+  padding: 16px 24px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+}
+header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.3px; }
+header .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+nav { display: flex; gap: 6px; }
+nav button {
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+nav button:hover { color: var(--text); border-color: var(--border-strong); }
+nav button.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+#search {
+  padding: 6px 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px; color: var(--text);
+  width: 200px;
+}
+#search::placeholder { color: var(--text-dim); }
+
+main {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  grid-template-rows: 1fr;
+  height: calc(100vh - 65px);
+  overflow: hidden;
+}
+main.layout-bottom {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 340px;
+}
+
+.canvas {
+  overflow: auto;
+  padding: 24px;
+  position: relative;
+}
+
+/* ---- Component view ---- */
+#components-view { display: flex; flex-direction: column; gap: 24px; }
+.layer {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.layer-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+.layer-badge {
+  width: 10px; height: 10px; border-radius: 2px;
+}
+.layer-badge.core { background: var(--core); }
+.layer-badge.brain { background: var(--brain); }
+.layer-badge.app { background: var(--app); }
+.layer-badge.ext { background: var(--ext); }
+.layer-title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+.layer-sub { font-size: 12px; color: var(--text-muted); font-weight: 400; margin-left: auto; }
+
+.layer-group { margin-bottom: 14px; }
+.layer-group:last-child { margin-bottom: 0; }
+.group-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 1.5px;
+  color: var(--text-dim); text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.card {
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+.card:hover { border-color: var(--border-strong); background: var(--bg-alt); }
+.card.selected { border-color: var(--accent); background: var(--bg-alt); }
+.card-name { font-size: 13px; font-weight: 500; color: var(--text); }
+.card-kind { font-size: 10px; color: var(--text-muted); margin-top: 2px; letter-spacing: 0.3px; }
+
+/* ---- Swimlane view ---- */
+#swimlane-view { display: none; }
+#swimlane-view.active { display: block; }
+
+.swimlane-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: var(--shadow); overflow-x: auto; }
+.swimlane-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.swimlane-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; }
+
+.swim-grid {
+  display: grid;
+  /* First col: sticky lane label. Remaining cols: one per step (set dynamically). */
+  grid-template-columns: 170px 1fr;
+  background: var(--card);
+  position: relative;
+  /* Intentionally NO overflow/border-radius here — sticky lane labels need
+     `.swim-scroll` to be the scroll ancestor. The visual frame lives on
+     `.swim-scroll` instead. */
+}
+.swim-lane {
+  display: contents;
+}
+.lane-label {
+  grid-column: 1;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 14px 16px;
+  background: var(--bg-alt);
+  border-right: 2px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--text);
+  position: sticky; left: 0; z-index: 3;
+}
+.swim-lane:last-child .lane-label { border-bottom: none; }
+.lane-label .lane-sub { font-size: 10px; font-weight: 400; color: var(--text-muted); margin-top: 2px; }
+
+.lane-track {
+  grid-column: 2;
+  position: relative;
+  min-height: 140px;
+  display: grid;
+  /* Step positions filled by inline grid-template-columns (one col per step slot). */
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  background:
+    repeating-linear-gradient(90deg,
+      transparent 0 calc(var(--step-width) - 1px),
+      rgba(0,0,0,0.04) calc(var(--step-width) - 1px) var(--step-width));
+}
+.swim-lane:nth-child(even) .lane-track { background-color: var(--bg); }
+.swim-lane:last-child .lane-track { border-bottom: none; }
+
+.step {
+  padding: 8px 10px;
+  margin: 0 6px;
+  background: white;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  font-size: 11px; line-height: 1.35;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  position: relative;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  z-index: 1;
+  align-self: center;
+}
+.step[data-lane="alice"] { border-left-color: var(--app); }
+.step[data-lane="appview"] { border-left-color: var(--ext); }
+.step[data-lane="msgbox"] { border-left-color: var(--ext); }
+.step[data-lane="bob"] { border-left-color: var(--brain); }
+.step[data-lane="agent"] { border-left-color: var(--core); }
+.step:hover { border-color: var(--accent); background: var(--bg); transform: translateY(-1px); }
+.step.selected { border-color: var(--accent); background: white; box-shadow: 0 0 0 2px rgba(28,25,23,0.15), 0 2px 6px rgba(0,0,0,0.1); }
+.step-num {
+  display: inline-block; min-width: 18px; height: 18px;
+  padding: 0 4px;
+  border-radius: 4px; background: var(--accent); color: white;
+  text-align: center; font-size: 10px; line-height: 18px; font-weight: 600;
+  margin-right: 6px;
+  vertical-align: text-top;
+}
+.step-title { font-weight: 500; display: inline; }
+.step-desc { font-size: 10px; color: var(--text-muted); margin-top: 4px; line-height: 1.3; }
+.step-io {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9.5px;
+  color: var(--text);
+  background: var(--bg-alt);
+  padding: 3px 6px;
+  border-radius: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.step-click-hint { font-size: 9px; color: var(--text-dim); margin-top: 4px; font-style: italic; }
+
+/* Arrow overlay — drawn via an SVG layer on top of the grid. */
+.swim-arrows {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.swim-arrows path {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  opacity: 0.65;
+}
+.swim-arrows polygon { fill: var(--text-muted); opacity: 0.65; }
+
+.swim-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.swim-legend {
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--bg);
+  border-radius: 10px;
+  font-size: 12px; color: var(--text-muted);
+  border: 1px dashed var(--border);
+}
+.swim-legend strong { color: var(--text); }
+
+/* ---- Detail panel ---- */
+#detail-panel {
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 24px;
+}
+main.layout-bottom #detail-panel {
+  border-left: none;
+  border-top: 1px solid var(--border);
+  padding: 20px 24px;
+}
+main.layout-bottom #detail-panel.has-selection {
+  display: grid;
+  grid-template-columns: 280px 1fr 1fr;
+  gap: 16px 24px;
+  align-content: start;
+}
+main.layout-bottom #detail-panel.has-selection .detail-header {
+  grid-column: 1;
+  grid-row: 1 / span 5;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+  padding-right: 20px;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  align-self: stretch;
+}
+main.layout-bottom #detail-panel.has-selection .detail-section {
+  margin-bottom: 0;
+}
+.detail-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 0;
+  font-style: italic;
+}
+.detail-header { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.detail-layer { font-size: 10px; font-weight: 600; letter-spacing: 1.5px; color: var(--text-muted); }
+.detail-layer.core { color: var(--core); }
+.detail-layer.brain { color: var(--brain); }
+.detail-layer.app { color: var(--app); }
+.detail-layer.ext { color: var(--ext); }
+.detail-name { font-size: 18px; font-weight: 600; margin-top: 4px; }
+.detail-kind { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.detail-section { margin-bottom: 16px; }
+.detail-section h3 {
+  font-size: 10px; font-weight: 600; letter-spacing: 1.5px;
+  color: var(--text-muted); text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.detail-section p, .detail-section li { font-size: 13px; line-height: 1.55; color: var(--text); }
+.detail-section ul { padding-left: 16px; }
+.detail-section li { margin-bottom: 3px; }
+.detail-file {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px; background: var(--bg-alt); padding: 6px 10px;
+  border-radius: 6px; color: var(--text); word-break: break-all;
+}
+.detail-refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.ref-pill {
+  padding: 4px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+.ref-pill:hover { border-color: var(--accent); background: white; }
+
+.tag {
+  display: inline-block; padding: 1px 6px;
+  background: var(--bg-alt); border-radius: 4px;
+  font-size: 10px; letter-spacing: 0.3px;
+  color: var(--text-muted); margin-right: 4px;
+}
+.tag.core { background: rgba(37,99,235,0.1); color: var(--core); }
+.tag.brain { background: rgba(5,150,105,0.1); color: var(--brain); }
+.tag.app { background: rgba(217,119,6,0.1); color: var(--app); }
+.tag.ext { background: rgba(124,58,237,0.1); color: var(--ext); }
+
+.filter-hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Dina Mobile · Architecture</h1>
+    <div class="subtitle">Pure-JS home node for Expo · click any component or step for details</div>
+  </div>
+  <nav>
+    <button class="view-toggle active" data-view="components">Components</button>
+    <button class="view-toggle" data-view="swimlane">Bus Driver Flow</button>
+  </nav>
+  <input id="search" placeholder="Search components…" />
+</header>
+
+<main>
+  <div class="canvas">
+    <div id="components-view"></div>
+    <div id="swimlane-view"></div>
+  </div>
+  <aside id="detail-panel">
+    <div class="detail-empty">Click any component or flow step to see details</div>
+  </aside>
+</main>
+
+<script>
+// ===========================================================================
+// Component data
+// ===========================================================================
+const LAYERS = {
+  ext: { name: 'External Infrastructure', sub: 'Services outside dina-mobile that the app talks to', css: 'ext' },
+  app: { name: 'App (Expo managed React Native)', sub: 'Screens, hooks, bootstrap', css: 'app' },
+  brain: { name: '@dina/brain', sub: 'Reasoning, orchestration, service-layer composition', css: 'brain' },
+  core: { name: '@dina/core', sub: 'Identity, workflow, D2D, routing — pure TS, no HTTP server', css: 'core' }
+};
+
+const GROUPS = {
+  // External
+  'test-infra': { layer: 'ext', label: 'Test infrastructure' },
+  'ext-agent': { layer: 'ext', label: 'External execution plane' },
+  // App
+  'app-ui': { layer: 'app', label: 'Screens' },
+  'app-hooks': { layer: 'app', label: 'Hooks (data layer)' },
+  'app-boot': { layer: 'app', label: 'Bootstrap' },
+  // Brain
+  'brain-chat': { layer: 'brain', label: 'Chat + reasoning' },
+  'brain-llm': { layer: 'brain', label: 'LLM providers + tool loop' },
+  'brain-service': { layer: 'brain', label: 'Service layer (provider + requester)' },
+  'brain-runners': { layer: 'brain', label: 'Runners (polling loops)' },
+  'brain-clients': { layer: 'brain', label: 'External clients' },
+  'brain-identity': { layer: 'brain', label: 'Identity' },
+  // Core
+  'core-router': { layer: 'core', label: 'Routing + transport adapters' },
+  'core-auth': { layer: 'core', label: 'Auth + authz' },
+  'core-workflow': { layer: 'core', label: 'Workflow control plane' },
+  'core-d2d': { layer: 'core', label: 'D2D (device-to-device)' },
+  'core-identity': { layer: 'core', label: 'Identity + keypair' },
+  'core-service': { layer: 'core', label: 'Service layer (provider windows + config)' },
+  'core-relay': { layer: 'core', label: 'MsgBox relay' },
+  'core-vault': { layer: 'core', label: 'Vault + PII + staging' },
+  'core-storage': { layer: 'core', label: 'Storage + crypto' },
+};
+
+const COMPONENTS = {
+  // -------- External --------
+  'test-pds': { group: 'test-infra', name: 'test-pds.dinakernel.com', kind: 'PDS (ATProto)',
+    desc: 'Personal Data Server hosting signed records for this node — service profile, capability schemas, any future user-authored content.',
+    detail: 'Receives com.atproto.server.createAccount + com.atproto.repo.putRecord calls from the app. Holds the did:plc minted during onboarding.',
+    uses: ['plc-directory'], usedBy: ['pds-account-client', 'pds-publisher'] },
+  'test-appview': { group: 'test-infra', name: 'test-appview.dinakernel.com', kind: 'Service discovery',
+    desc: 'AppView that indexes com.dina.service.profile PDS records into a queryable directory. Given a capability, returns provider candidates.',
+    detail: 'HTTP XRPC endpoints: com.dina.service.search (capability + geo filter) and com.dina.service.isPublic. Ingests profile records via PDS firehose.',
+    uses: [], usedBy: ['appview-client'] },
+  'test-mailbox': { group: 'test-infra', name: 'test-mailbox.dinakernel.com', kind: 'MsgBox relay',
+    desc: 'WebSocket relay that routes D2D envelopes and RPC envelopes between peers — neither side needs a public IP.',
+    detail: 'Home node holds a persistent WS. Inbound: buffered for offline DIDs. Outbound: POST /forward with 6 Ed25519-signed headers.',
+    uses: [], usedBy: ['msgbox-ws', 'msgbox-forward'] },
+  'plc-directory': { group: 'test-infra', name: 'plc.directory', kind: 'PLC directory',
+    desc: 'AT Protocol DID registry. Hosts the did:plc document that ties the node\'s signing key to its services endpoint.',
+    detail: 'POST /did:plc:{id} creates a did:plc from a signed genesis operation. GET /did:plc:{id} resolves for signature verification.',
+    uses: [], usedBy: ['plc-client'] },
+  'dina-agent': { group: 'ext-agent', name: 'dina-agent (Python)', kind: 'External runner',
+    desc: 'Python pypi package (derived from dina-cli) that runs on an always-on server. Pulls delegation tasks via /v1/workflow/tasks/claim, executes them via OpenClaw, reports back.',
+    detail: 'Paired to the home node by Ed25519 device registration (role="agent"). Talks to Core via MsgBox RPC envelopes — no direct HTTP required. Not shipped with the mobile app; deployed separately.',
+    uses: ['test-mailbox', 'openclaw', 'core-router'], usedBy: [] },
+  'openclaw': { group: 'ext-agent', name: 'OpenClaw', kind: 'Capability runtime',
+    desc: 'Capability execution sandbox — web_fetch, code_execute, tool.mcp_proxy, etc. Receives per-capability tasks from dina-agent via POST /task.',
+    detail: 'Registers capability handlers at startup; the transit capability is how Bus Driver answers "ETA for Bus 42". Honors capability scope declared in the delegation packet.',
+    uses: [], usedBy: ['dina-agent'] },
+
+  // -------- App: UI --------
+  'screen-chat': { group: 'app-ui', name: 'Chat screen', kind: 'app/index.tsx',
+    file: 'packages/app/app/index.tsx',
+    desc: 'Default tab. Renders the chat thread and accepts /ask, /service, /service_approve commands.',
+    uses: ['chat-orchestrator', 'chat-thread'], usedBy: [] },
+  'screen-approvals': { group: 'app-ui', name: 'Approvals inbox', kind: 'app/approvals.tsx',
+    file: 'packages/app/app/approvals.tsx',
+    desc: 'Top-level tab showing pending approval tasks. Approve/Deny buttons forward to BrainCoreClient.',
+    uses: ['use-service-inbox'], usedBy: [] },
+  'screen-service-settings': { group: 'app-ui', name: 'Service sharing', kind: 'app/service-settings.tsx (nested)',
+    file: 'packages/app/app/service-settings.tsx',
+    desc: 'Drilldown from Settings → isPublic toggle, name/description, per-capability response policy.',
+    uses: ['use-service-config-form'], usedBy: [] },
+
+  // -------- App: hooks --------
+  'use-service-inbox': { group: 'app-hooks', name: 'useServiceInbox', kind: 'hook',
+    file: 'packages/app/src/hooks/useServiceInbox.ts',
+    desc: 'listPendingApprovals / approvePending / denyPending. Normalises WorkflowTask → InboxEntry with param previews and expiry indicators.',
+    tests: 'packages/app/__tests__/hooks/useServiceInbox.test.ts (9)',
+    uses: ['brain-core-client'], usedBy: ['screen-approvals'] },
+  'use-service-config-form': { group: 'app-hooks', name: 'useServiceConfigForm', kind: 'hook',
+    file: 'packages/app/src/hooks/useServiceConfigForm.ts',
+    desc: 'loadServiceConfig / saveServiceConfig. Client-side validateServiceConfig fires before the network write.',
+    tests: 'packages/app/__tests__/hooks/useServiceConfigForm.test.ts (7)',
+    uses: ['brain-core-client', 'service-config'], usedBy: ['screen-service-settings'] },
+  'use-thread-delivery': { group: 'app-hooks', name: 'useServiceThreadDelivery', kind: 'hook (non-default path)',
+    file: 'packages/app/src/hooks/useServiceThreadDelivery.ts',
+    desc: 'Wires a standalone WorkflowEventConsumer to addDinaResponse. Used when bootstrap doesn\'t own the consumer.',
+    tests: 'packages/app/__tests__/hooks/useServiceThreadDelivery.test.ts (5)',
+    uses: ['workflow-event-consumer', 'chat-thread'], usedBy: [] },
+
+  // -------- App: bootstrap --------
+  'create-node': { group: 'app-boot', name: 'createNode', kind: 'bootstrap factory',
+    file: 'packages/app/src/services/bootstrap.ts',
+    desc: 'Single-call factory that composes WorkflowService (with Response Bridge), ServiceHandler, orchestrator, event consumer, approval reconciler, chat wiring.',
+    detail: 'Takes identity + pre-built clients + CoreRouter + MsgBox config. Returns a DinaNode with start/stop/drainOnce/dispose.',
+    tests: 'packages/app/__tests__/services/bootstrap.test.ts (14)',
+    uses: ['workflow-service', 'service-handler', 'service-query-orchestrator', 'workflow-event-consumer', 'approval-reconciler', 'lease-expiry-sweeper', 'service-wiring', 'response-bridge-sender', 'service-publisher', 'msgbox-boot'],
+    usedBy: [] },
+  'identity-store': { group: 'app-boot', name: 'identity_store (keychain)', kind: 'service',
+    file: 'packages/app/src/services/identity_store.ts',
+    desc: 'loadOrGenerateSeeds — reads/writes Ed25519 signing + secp256k1 rotation seeds to Keychain/Keystore. Handles partial-state recovery.',
+    tests: 'packages/app/__tests__/services/identity_store.test.ts (10)',
+    uses: [], usedBy: ['create-node', 'ensure-node-identity'] },
+
+  // -------- Brain: chat + reasoning --------
+  'chat-orchestrator': { group: 'brain-chat', name: 'chat/orchestrator', kind: 'command router',
+    file: 'packages/brain/src/chat/orchestrator.ts',
+    desc: 'handleChat(text) — parses the command, dispatches to /ask (agentic loop) / /service (orchestrator) / /service_approve / /service_deny / /search / /remember / /help.',
+    detail: 'Exposes setAskCommandHandler, setServiceCommandHandler, setServiceApproveCommandHandler so bootstrap can install backends.',
+    uses: ['command-parser', 'chat-thread', 'chat-reasoning'], usedBy: ['screen-chat', 'create-node'] },
+  'command-parser': { group: 'brain-chat', name: 'command_parser', kind: 'intent parser',
+    file: 'packages/brain/src/chat/command_parser.ts',
+    desc: 'Parses text into ChatIntent (chat|ask|remember|search|service|service_approve|service_deny|help). Safe task-id regex rejects shell-injection.',
+    uses: [], usedBy: ['chat-orchestrator'] },
+  'chat-thread': { group: 'brain-chat', name: 'chat/thread', kind: 'in-memory thread store',
+    file: 'packages/brain/src/chat/thread.ts',
+    desc: 'Append-only thread storage with ChatMessage (user/dina/system/approval). addDinaResponse(threadId, text, sources?) is how workflow events surface in chat.',
+    uses: [], usedBy: ['chat-orchestrator', 'workflow-event-consumer', 'use-thread-delivery'] },
+  'chat-reasoning': { group: 'brain-chat', name: 'chat_reasoning', kind: 'single-shot fallback',
+    file: 'packages/brain/src/pipeline/chat_reasoning.ts',
+    desc: 'reason({query, persona, provider}) — legacy non-agentic pipeline. Used when no agentic handler is installed. Will be retired once the agentic loop matures.',
+    uses: ['llm-router', 'vault'], usedBy: ['chat-orchestrator'] },
+
+  // -------- Brain: LLM + agentic --------
+  'agentic-loop': { group: 'brain-llm', name: 'runAgenticTurn', kind: 'multi-turn tool-use loop',
+    file: 'packages/brain/src/reasoning/agentic_loop.ts',
+    desc: 'User msg + system + tool defs → LLM → parse tool_use → execute tools → feed back → repeat. Budgets, termination, full transcript.',
+    detail: 'Scoped port of main-dina\'s ReasoningAgent.reason. Round-trips tool calls with proper assistant+tool role messages (no text-fallback shortcut).',
+    tests: 'packages/brain/__tests__/reasoning/agentic_loop.test.ts (10)',
+    uses: ['tool-registry', 'llm-provider'], usedBy: ['ask-handler'] },
+  'ask-handler': { group: 'brain-llm', name: 'makeAgenticAskHandler', kind: 'chat /ask adapter',
+    file: 'packages/brain/src/reasoning/ask_handler.ts',
+    desc: 'Wraps runAgenticTurn into the chat-orchestrator\'s AskCommandHandler shape. Surfaces query_service task_ids as chat sources.',
+    tests: 'packages/brain/__tests__/reasoning/ask_handler.test.ts (5)',
+    uses: ['agentic-loop'], usedBy: ['create-node'] },
+  'tool-registry': { group: 'brain-llm', name: 'ToolRegistry', kind: 'tool dispatcher',
+    file: 'packages/brain/src/reasoning/tool_registry.ts',
+    desc: 'Declarative (name, description, schema, execute) tools. Validates args against top-level schema; catches throws; structured outcomes.',
+    tests: 'packages/brain/__tests__/reasoning/tool_registry.test.ts (13)',
+    uses: [], usedBy: ['agentic-loop', 'bus-driver-tools'] },
+  'bus-driver-tools': { group: 'brain-llm', name: 'Bus Driver tools', kind: 'geocode + search + query',
+    file: 'packages/brain/src/reasoning/bus_driver_tools.ts',
+    desc: 'Three LLM tools: geocode (Nominatim or OpenClaw), search_public_services (AppView), query_service (orchestrator fire-and-forget).',
+    tests: 'packages/brain/__tests__/reasoning/bus_driver_tools.test.ts (14)',
+    uses: ['appview-client', 'service-query-orchestrator'], usedBy: ['create-node'] },
+  'llm-router': { group: 'brain-llm', name: 'LLM router', kind: 'provider selector',
+    file: 'packages/brain/src/llm/router.ts',
+    desc: 'Picks LLM provider by task type + local/cloud availability + persona sensitivity + consent gates.',
+    uses: ['llm-provider'], usedBy: ['chat-reasoning'] },
+  'llm-provider': { group: 'brain-llm', name: 'LLMProvider (adapters)', kind: 'Gemini / Claude / OpenAI / OpenRouter',
+    file: 'packages/brain/src/llm/adapters/',
+    desc: 'Common interface: chat(messages, {tools, systemPrompt}) → ChatResponse with toolCalls. Adapter per provider; round-trips tool messages as provider-native parts.',
+    detail: 'Gemini: functionCall / functionResponse parts. OpenAI: role=tool + tool_call_id. All share ChatMessage shape with optional toolCalls / toolCallId / toolName.',
+    uses: [], usedBy: ['agentic-loop', 'llm-router'] },
+
+  // -------- Brain: service layer --------
+  'service-handler': { group: 'brain-service', name: 'ServiceHandler', kind: 'inbound service.query handler',
+    file: 'packages/brain/src/service/service_handler.ts',
+    desc: 'Provider-side: handleQuery(fromDID, body) validates + dispatches on capability responsePolicy. auto → delegation task (queued); review → approval task.',
+    detail: 'executeAndRespond(approvalTaskId, payload) spawns a delegation with deterministic id svc-exec-from-<approvalId> (idempotent) + cancels the approval.',
+    uses: ['workflow-service', 'service-config'], usedBy: ['workflow-event-consumer', 'create-node'] },
+  'service-query-orchestrator': { group: 'brain-service', name: 'ServiceQueryOrchestrator', kind: 'outbound dispatch',
+    file: 'packages/brain/src/service/service_query_orchestrator.ts',
+    desc: 'Requester-side: issueQuery(req) searches AppView, ranks candidates, hands off to BrainCoreClient.sendServiceQuery. Returns immediately — response arrives via workflow events.',
+    uses: ['appview-client', 'brain-core-client'], usedBy: ['service-wiring', 'bus-driver-tools'] },
+  'service-wiring': { group: 'brain-service', name: 'wireServiceOrchestrator', kind: 'chat ↔ orchestrator glue',
+    file: 'packages/brain/src/service/service_wiring.ts',
+    desc: 'Installs a ServiceCommandHandler so "/service <cap> <text>" routes to orchestrator.issueQuery. errorToAck maps pre-send errors to friendly strings.',
+    uses: ['service-query-orchestrator', 'chat-orchestrator'], usedBy: ['create-node'] },
+  'result-formatter': { group: 'brain-service', name: 'formatServiceQueryResult', kind: 'event-details → chat string',
+    file: 'packages/brain/src/service/result_formatter.ts',
+    desc: 'Pure function. Per-capability formatter table (eta_query, …) with generic JSON fallback. Plain URLs so Telegram auto-linkifies without per-platform branching.',
+    uses: ['capability-registry'], usedBy: ['workflow-event-consumer'] },
+  'capability-registry': { group: 'brain-service', name: 'capabilities/registry', kind: 'capability metadata',
+    file: 'packages/brain/src/service/capabilities/',
+    desc: 'Registered capabilities (eta_query, …) with params/result schemas + TTL + hand-written validators. Single source for publisher + handler + formatter.',
+    uses: [], usedBy: ['service-handler', 'service-publisher', 'result-formatter'] },
+
+  // -------- Brain: runners --------
+  'workflow-event-consumer': { group: 'brain-runners', name: 'WorkflowEventConsumer', kind: 'poll loop',
+    file: 'packages/brain/src/service/workflow_event_consumer.ts',
+    desc: 'Polls /v1/workflow/events?needs_delivery=true. Dispatches event_kind=completed/service_query → deliver callback (chat thread). event_kind=approved/approval → onApproved (executeAndRespond).',
+    detail: 'Ack-after-effects: no ack until deliver/onApproved succeeds. Per-event error isolation. Injectable scheduler.',
+    tests: 'packages/brain/__tests__/service/workflow_event_consumer.test.ts (27)',
+    uses: ['brain-core-client', 'result-formatter', 'chat-thread', 'service-handler'],
+    usedBy: ['create-node'] },
+  'approval-reconciler': { group: 'brain-runners', name: 'ApprovalReconciler', kind: 'poll loop',
+    file: 'packages/brain/src/service/approval_reconciliation.ts',
+    desc: 'Provider-side sweeper. Every 5 min (default): expires approval tasks past TTL, emits unavailable service.response with approval_expired error.',
+    uses: ['brain-core-client'], usedBy: ['create-node'] },
+  'service-publisher': { group: 'brain-runners', name: 'ServicePublisher', kind: 'PDS profile sync',
+    file: 'packages/brain/src/service/service_publisher.ts',
+    desc: 'Publish / unpublish the com.dina.service.profile record. Verifies PDS session DID matches home node\'s expected DID before writing.',
+    uses: ['pds-publisher', 'capability-registry'], usedBy: ['create-node'] },
+  'approve-command': { group: 'brain-runners', name: 'makeServiceApprove/DenyHandler', kind: 'chat command factory',
+    file: 'packages/brain/src/service/approve_command.ts',
+    desc: 'Factory that wraps coreClient.approveWorkflowTask / cancelWorkflowTask into a chat-command handler. Error mapping for 404 / 409 operator messages.',
+    uses: ['brain-core-client'], usedBy: ['create-node'] },
+
+  // -------- Brain: clients --------
+  'brain-core-client': { group: 'brain-clients', name: 'BrainCoreClient', kind: 'Core HTTP client',
+    file: 'packages/brain/src/core_client/http.ts',
+    desc: 'Signed requests to Core. Uses in-process signedDispatch on mobile (no network). HTTP path with retry + circuit breaker for cloud variants.',
+    detail: 'Ed25519 signs the canonical (method + path + query + timestamp + nonce + sha256(body)). Calls CoreRouter.handle via dispatch.',
+    uses: ['core-router', 'in-process-dispatch'], usedBy: ['service-query-orchestrator', 'service-handler', 'workflow-event-consumer', 'approval-reconciler', 'use-service-inbox', 'use-service-config-form'] },
+  'appview-client': { group: 'brain-clients', name: 'AppViewClient', kind: 'HTTP client',
+    file: 'packages/brain/src/appview_client/http.ts',
+    desc: 'searchServices(capability, lat?, lng?, radiusKm?) + isPublic(did). Retry with exponential backoff on 5xx/408/429.',
+    uses: ['test-appview'], usedBy: ['service-query-orchestrator', 'bus-driver-tools'] },
+  'pds-publisher': { group: 'brain-clients', name: 'PDSPublisher', kind: 'ATProto record client',
+    file: 'packages/brain/src/pds/publisher.ts',
+    desc: 'Cached session. putRecord + deleteRecord + deleteRecordIdempotent. 1-hour session TTL with on-401 invalidation.',
+    uses: ['test-pds'], usedBy: ['service-publisher'] },
+  'pds-account-client': { group: 'brain-clients', name: 'PDSAccountClient', kind: 'account lifecycle',
+    file: 'packages/brain/src/pds/account.ts',
+    desc: 'describeServer + createAccount + createSession + refreshSession + ensureAccount (login, fall back to create on AccountNotFound).',
+    tests: 'packages/brain/__tests__/pds/account.test.ts (19)',
+    uses: ['test-pds'], usedBy: ['ensure-node-identity'] },
+  'plc-client': { group: 'brain-clients', name: 'PLC directory client', kind: 'did:plc registration',
+    file: 'packages/core/src/identity/directory.ts',
+    desc: 'createDIDPLC — build genesis operation, sign with Ed25519 + secp256k1 rotation key, POST to /did:plc:{hash}.',
+    uses: ['plc-directory'], usedBy: ['ensure-node-identity'] },
+
+  // -------- Brain: identity --------
+  'ensure-node-identity': { group: 'brain-identity', name: 'ensureNodeIdentity', kind: 'identity bootstrap',
+    file: 'packages/brain/src/identity/node_identity.ts',
+    desc: 'Idempotent: createSession first; on AccountNotFound → createDIDPLC then createAccount with did: <ours>. Rejects when PDS returns a different DID.',
+    detail: 'Self-managed did:plc path — home node owns the rotation key; PDS can\'t rotate the identity out from under us.',
+    tests: 'packages/brain/__tests__/identity/node_identity.test.ts (12)',
+    uses: ['pds-account-client', 'plc-client', 'identity-store'], usedBy: ['create-node'] },
+
+  // -------- Core: router --------
+  'core-router': { group: 'core-router', name: 'CoreRouter', kind: 'pure-function router',
+    file: 'packages/core/src/server/router.ts',
+    desc: 'handle(req: CoreRequest) → Promise<CoreResponse>. Literal + :param path matching, auth gate before dispatch, public-route exemption for /healthz.',
+    detail: 'No Express anywhere. Transport adapters feed CoreRequest in; response translation to HTTP happens in the adapter if there is one.',
+    tests: 'packages/core/__tests__/server/router.test.ts (18), core_router_integration.test.ts (23)',
+    uses: ['auth-middleware'], usedBy: ['in-process-dispatch', 'msgbox-boot', 'brain-core-client'] },
+  'in-process-dispatch': { group: 'core-router', name: 'createInProcessDispatch', kind: 'transport adapter',
+    file: 'packages/core/src/server/in_process_dispatch.ts',
+    desc: 'Parses query + body into CoreRequest; calls router.handle. The "HTTP without HTTP" — dispatch is a function reference, not a socket.',
+    uses: ['core-router'], usedBy: ['brain-core-client', 'msgbox-boot'] },
+  'route-handlers': { group: 'core-router', name: 'Route handlers', kind: '9 pure registrations',
+    file: 'packages/core/src/server/routes/',
+    desc: 'workflow / service_query / service_respond / service_config / vault / staging / pii / d2d_msg / devices. Each exports registerXxxRoutes(router).',
+    detail: 'Every handler is (req: CoreRequest) → Promise<CoreResponse>. No Express types leak out.',
+    uses: ['core-router', 'workflow-service', 'vault', 'pii-scrub', 'staging-service'], usedBy: [] },
+
+  // -------- Core: auth --------
+  'auth-middleware': { group: 'core-auth', name: 'authenticateRequest', kind: 'Ed25519 + authz',
+    file: 'packages/core/src/auth/middleware.ts',
+    desc: '(1) headers present (2) ts ±5min (3) nonce not replayed (4) Ed25519 verify (5) rate limit per-DID (6) resolve caller (7) authz matrix.',
+    uses: ['canonical-signing', 'nonce-cache', 'rate-limiter', 'authz-matrix', 'caller-type'], usedBy: ['core-router'] },
+  'canonical-signing': { group: 'core-auth', name: 'canonical signing', kind: 'Ed25519 over METHOD/PATH/QUERY/TS/NONCE/SHA256(BODY)',
+    file: 'packages/core/src/auth/canonical.ts',
+    desc: 'signRequest(method, path, query, body, privateKey, did) → {X-DID, X-Timestamp, X-Nonce, X-Signature}. verifyRequest is the server-side pair.',
+    uses: [], usedBy: ['auth-middleware', 'brain-core-client'] },
+  'nonce-cache': { group: 'core-auth', name: 'NonceCache', kind: 'replay defense',
+    file: 'packages/core/src/auth/nonce.ts',
+    desc: 'Rejects already-seen nonces in a 10-min rolling window. Keyed by sender DID + nonce.',
+    uses: [], usedBy: ['auth-middleware'] },
+  'rate-limiter': { group: 'core-auth', name: 'PerDIDRateLimiter', kind: 'token bucket',
+    file: 'packages/core/src/auth/ratelimit.ts',
+    desc: 'Per-DID token bucket. Configurable rate / burst. Rejects with rejectedAt=rate_limit.',
+    uses: [], usedBy: ['auth-middleware'] },
+  'authz-matrix': { group: 'core-auth', name: 'Authz matrix', kind: 'path × caller allow-list',
+    file: 'packages/core/src/auth/authz.ts',
+    desc: 'Path-prefix → allowed caller types. brain + admin for most; /v1/workflow/tasks/ also allows agent (for pull); /v1/vault/query additionally allows device.',
+    uses: [], usedBy: ['auth-middleware'] },
+  'caller-type': { group: 'core-auth', name: 'caller_type resolver', kind: 'service/device/agent',
+    file: 'packages/core/src/auth/caller_type.ts',
+    desc: 'Resolves authenticated DID → service (brain/admin/connector) / device (rich/thin/cli) / agent (role=agent). Hooks a device-role resolver for role lookups.',
+    uses: ['device-registry'], usedBy: ['auth-middleware'] },
+
+  // -------- Core: workflow --------
+  'workflow-service': { group: 'core-workflow', name: 'WorkflowService', kind: 'lifecycle API',
+    file: 'packages/core/src/workflow/service.ts',
+    desc: 'create / approve / complete / fail / cancel. Validates state-machine transitions. Fires Response Bridge on delegation completions with payload.type=service_query_execution.',
+    uses: ['workflow-repository', 'workflow-domain', 'response-bridge-sender'], usedBy: ['route-handlers', 'service-handler', 'create-node'] },
+  'workflow-repository': { group: 'core-workflow', name: 'WorkflowRepository', kind: 'SQLite + in-memory',
+    file: 'packages/core/src/workflow/repository.ts',
+    desc: 'Atomic claimDelegationTask (oldest queued → running + lease), heartbeatTask, updateTaskProgress, expireLeasedTasks. completeWithDetails emits workflow_event.',
+    uses: ['workflow-domain'], usedBy: ['workflow-service', 'lease-expiry-sweeper'] },
+  'lease-expiry-sweeper': { group: 'core-workflow', name: 'LeaseExpirySweeper', kind: 'agent-pull watchdog',
+    file: 'packages/core/src/workflow/lease_expiry_sweeper.ts',
+    desc: 'Reverts delegation tasks whose agent lease has expired back to `queued` so another agent can reclaim them. Default 60s cadence; injectable scheduler + clock.',
+    detail: 'Fires one tick immediately on start() (catches leases that expired while the process was down), then every intervalMs. Per-task onReverted observer is error-isolated — a faulty logger can never break the sweeper loop. Repo errors surface via onError; the loop keeps running.',
+    tests: 'packages/core/__tests__/workflow/lease_expiry_sweeper.test.ts (15)',
+    uses: ['workflow-repository'], usedBy: ['create-node', 'dina-agent'] },
+  'workflow-domain': { group: 'core-workflow', name: 'workflow/domain', kind: 'state machine',
+    file: 'packages/core/src/workflow/domain.ts',
+    desc: 'WorkflowTaskKind (delegation/approval/service_query/timer/watch/generic). 12 states, ValidTransitions table. running→queued added for lease-expiry requeue.',
+    uses: [], usedBy: ['workflow-service', 'workflow-repository'] },
+  'response-bridge-sender': { group: 'core-workflow', name: 'makeServiceResponseBridgeSender', kind: 'completion → D2D',
+    file: 'packages/core/src/workflow/response_bridge_sender.ts',
+    desc: 'Factory: completion of a delegation with payload.type=service_query_execution auto-fires sendResponse(fromDID, ServiceResponseBody). Swallows send errors (task already complete).',
+    uses: ['d2d-send'], usedBy: ['workflow-service', 'create-node'] },
+
+  // -------- Core: D2D --------
+  'd2d-envelope': { group: 'core-d2d', name: 'D2D envelope', kind: 'seal + sign',
+    file: 'packages/core/src/d2d/envelope.ts',
+    desc: 'buildMessage + sealMessage (NaCl crypto_box_seal) + unsealMessage + verifyMessage. Wire shape: {c: base64, s: hex}.',
+    uses: ['crypto-ed25519'], usedBy: ['d2d-send', 'receive-pipeline'] },
+  'd2d-send': { group: 'core-d2d', name: 'sendD2D', kind: 'egress pipeline',
+    file: 'packages/core/src/d2d/send.ts',
+    desc: '6-stage egress: build → gate → sign → seal → deliver → outbox-on-failure. Public-service bypass calls publicServiceResolver instead of contact gate.',
+    uses: ['d2d-envelope', 'd2d-gates', 'transport-delivery', 'service-bypass-egress'], usedBy: ['response-bridge-sender'] },
+  'receive-pipeline': { group: 'core-d2d', name: 'receiveD2D', kind: 'ingress pipeline',
+    file: 'packages/core/src/d2d/receive_pipeline.ts',
+    desc: '1) unseal 2) signature verify 3) replay detect 4) V1 type enforce 5) body size 6) blocked-sender check 7) public-service bypass 8) contact gate / stage / quarantine.',
+    detail: 'service.query → open provider window + hand to Brain\'s dispatcher. service.response → consume requester window + completeWithDetails.',
+    uses: ['d2d-envelope', 'd2d-gates', 'service-bypass-ingress', 'requester-window', 'workflow-service'], usedBy: ['msgbox-handlers'] },
+  'd2d-gates': { group: 'core-d2d', name: 'egress gates', kind: 'contact + scenario + sharing + audit',
+    file: 'packages/core/src/d2d/gates.ts',
+    desc: '4-gate check on outbound D2D: contact (known recipient), scenario (context-appropriate), sharing (persona boundary), audit (hash chain).',
+    uses: [], usedBy: ['d2d-send'] },
+  'd2d-families': { group: 'core-d2d', name: 'D2D families', kind: 'message types',
+    file: 'packages/core/src/d2d/families.ts',
+    desc: 'MsgTypeServiceQuery, MsgTypeServiceResponse, presence, social, safety, trust. ServiceQueryBody / ServiceResponseBody.',
+    uses: [], usedBy: ['d2d-send', 'receive-pipeline', 'response-bridge-sender'] },
+
+  // -------- Core: identity --------
+  'keypair': { group: 'core-identity', name: 'identity/keypair', kind: 'Ed25519 identity',
+    file: 'packages/core/src/identity/keypair.ts',
+    desc: 'generateKeypair / signWithIdentity / verifyWithIdentity / keypair↔PEM. The node\'s lifetime signing key.',
+    uses: ['crypto-ed25519'], usedBy: ['ensure-node-identity', 'create-node'] },
+  'did-key': { group: 'core-identity', name: 'did:key encoder', kind: 'public-key → did:key',
+    file: 'packages/core/src/identity/did.ts',
+    desc: 'deriveDIDKey(publicKey) → did:key:z6Mk… + extractPublicKey(did) for inline resolution. Used for peer public keys in D2D envelopes.',
+    uses: [], usedBy: ['d2d-envelope', 'ensure-node-identity'] },
+  'did-document': { group: 'core-identity', name: 'did:plc document', kind: 'build + canonical hash',
+    file: 'packages/core/src/identity/did_document.ts',
+    desc: 'buildDIDDocument(did, signingMultibase, services). Canonical JSON + SHA-256 for PLC genesis.',
+    uses: [], usedBy: ['plc-client', 'ensure-node-identity'] },
+  'rotation-key': { group: 'core-identity', name: 'secp256k1 rotation key', kind: 'PLC rotation',
+    file: 'packages/core/src/identity/rotation.ts',
+    desc: 'SLIP-0010 derive(rotationSeed, generation). The PLC directory signs with this; rotation generation increments on key change.',
+    uses: [], usedBy: ['plc-client'] },
+
+  // -------- Core: service --------
+  'service-config': { group: 'core-service', name: 'ServiceConfig store', kind: 'config + validation',
+    file: 'packages/core/src/service/service_config.ts',
+    desc: 'getServiceConfig / setServiceConfig / validateServiceConfig. Emits config_changed event so ServicePublisher re-publishes atomically.',
+    uses: [], usedBy: ['route-handlers', 'service-handler', 'service-publisher', 'use-service-config-form'] },
+  'requester-window': { group: 'core-service', name: 'requesterWindow / providerWindow', kind: 'one-shot bypass state',
+    file: 'packages/core/src/service/windows.ts',
+    desc: 'Requester window opened by sendD2D for service.query; consumed by receive pipeline for service.response. Provider window opened by ingress; authorises response.',
+    uses: [], usedBy: ['d2d-send', 'receive-pipeline', 'route-handlers'] },
+  'service-bypass-egress': { group: 'core-service', name: 'egress service bypass', kind: 'evaluateServiceEgressBypass',
+    file: 'packages/core/src/service/bypass.ts',
+    desc: 'For service.query / service.response egress: consult publicServiceResolver (AppView-cached). Allow → skip contact gate. Deny / null → contact gate applies.',
+    uses: [], usedBy: ['d2d-send'] },
+  'service-bypass-ingress': { group: 'core-service', name: 'ingress service bypass', kind: 'evaluateServiceIngressBypass',
+    file: 'packages/core/src/service/bypass.ts',
+    desc: 'For service.query / service.response ingress: capability check + window check. Bypasses contact gate for legit public-service traffic only.',
+    uses: [], usedBy: ['receive-pipeline'] },
+
+  // -------- Core: relay --------
+  'msgbox-boot': { group: 'core-relay', name: 'bootstrapMsgBox', kind: 'WS startup',
+    file: 'packages/core/src/relay/msgbox_boot.ts',
+    desc: 'Sets identity + WS factory + envelope handlers (D2D → receive pipeline; RPC → CoreRouter). Connects relay with auto-reconnect.',
+    detail: 'createCoreRPCRouter wraps CoreRouter as an RPCRouterFn so inbound RPC envelopes dispatch directly — no fake Express req/res.',
+    uses: ['msgbox-ws', 'msgbox-handlers', 'in-process-dispatch'], usedBy: ['create-node'] },
+  'msgbox-ws': { group: 'core-relay', name: 'MsgBox WebSocket', kind: 'persistent connection',
+    file: 'packages/core/src/relay/msgbox_ws.ts',
+    desc: 'Connects to wss://…/ws. Handles D2D + RPC + cancel envelopes. Exponential-backoff reconnect.',
+    uses: ['test-mailbox'], usedBy: ['msgbox-boot'] },
+  'msgbox-forward': { group: 'core-relay', name: 'POST /forward', kind: 'outbound relay',
+    file: 'packages/core/src/relay/msgbox_forward.ts',
+    desc: '6-header signed POST to MsgBox: X-Recipient-DID + X-Sender-DID + X-Timestamp + X-Nonce + X-Signature + X-Sender-Pub. Body is sealed envelope bytes.',
+    uses: ['test-mailbox'], usedBy: ['transport-delivery'] },
+  'msgbox-handlers': { group: 'core-relay', name: 'MsgBox handlers', kind: 'inbound dispatch',
+    file: 'packages/core/src/relay/msgbox_handlers.ts',
+    desc: 'handleInboundD2D → receive pipeline. handleInboundRPC → decrypt → CoreRouter dispatch (via createInProcessDispatch).',
+    uses: ['receive-pipeline', 'core-router'], usedBy: ['msgbox-boot'] },
+  'rpc-envelope': { group: 'core-relay', name: 'RPC envelope', kind: 'NaCl sealed HTTP-over-WS',
+    file: 'packages/core/src/relay/rpc_envelope.ts',
+    desc: '{type:"rpc", id, from_did, to_did, direction:"request"|"response", expires_at, ciphertext: sealed(HTTP req/resp)}.',
+    uses: [], usedBy: ['msgbox-handlers'] },
+  'transport-delivery': { group: 'core-relay', name: 'transport/delivery', kind: 'DID → endpoint routing',
+    file: 'packages/core/src/transport/delivery.ts',
+    desc: 'deliverMessage decides DinaMsgBox vs DinaDirectHTTPS from recipient DID document. Cached 10 min.',
+    uses: ['msgbox-forward'], usedBy: ['d2d-send'] },
+
+  // -------- Core: vault + pii + staging --------
+  'vault': { group: 'core-vault', name: 'Vault (CRUD + tiered)', kind: 'encrypted storage',
+    file: 'packages/core/src/vault/',
+    desc: 'storeItem / queryVault (FTS5) / getItem / tiered load. AES-256-GCM with per-persona key.',
+    uses: ['sqlite-adapter', 'crypto-ed25519'], usedBy: ['route-handlers'] },
+  'pii-scrub': { group: 'core-vault', name: 'PII scrub', kind: 'pattern scrubber',
+    file: 'packages/core/src/pii/',
+    desc: 'scrubPII replaces emails / phones / SSN / credit cards with tokens + rehydration map. scrubProcessRehydrate wraps LLM calls.',
+    uses: [], usedBy: ['route-handlers', 'chat-reasoning'] },
+  'staging-service': { group: 'core-vault', name: 'Staging service', kind: 'claim-lease queue',
+    file: 'packages/core/src/staging/',
+    desc: 'Ingest → claim (15-min lease) → resolve / fail / extend-lease. Brain\'s attention surface for inbound data.',
+    uses: ['sqlite-adapter'], usedBy: ['route-handlers'] },
+
+  // -------- Core: storage + crypto --------
+  'sqlite-adapter': { group: 'core-storage', name: 'SQLite adapter', kind: 'expo-sqlite / op-sqlite',
+    file: 'packages/core/src/storage/',
+    desc: 'DatabaseAdapter interface: query / run / transaction. Migrations applied at startup (workflow_tasks + workflow_events at v3).',
+    uses: [], usedBy: ['workflow-repository', 'vault', 'staging-service', 'device-registry'] },
+  'crypto-ed25519': { group: 'core-storage', name: 'Ed25519 + NaCl', kind: '@noble/ciphers + ed25519',
+    file: 'packages/core/src/crypto/',
+    desc: 'Ed25519 sign/verify + X25519 sealed box. Pure JS (Expo managed OK). Deriveable from the signing key (no separate X25519 keypair).',
+    uses: [], usedBy: ['canonical-signing', 'd2d-envelope', 'keypair'] },
+  'device-registry': { group: 'core-storage', name: 'devices/registry', kind: 'paired devices',
+    file: 'packages/core/src/devices/registry.ts',
+    desc: 'registerDevice(name, pubKey, role) with roles rich/thin/cli/agent. didIndex for DID-based lookups. setDeviceRoleResolver hooks into caller-type.',
+    uses: ['sqlite-adapter'], usedBy: ['caller-type'] },
+};
+
+// ===========================================================================
+// Bus Driver flow (swimlane)
+// ===========================================================================
+const LANES = [
+  { id: 'alice', label: 'Alice (requester)', sub: "User's phone" },
+  { id: 'appview', label: 'AppView', sub: 'Public service index' },
+  { id: 'msgbox', label: 'MsgBox', sub: 'Relay' },
+  { id: 'bob', label: 'Bob (provider)', sub: "Provider's phone" },
+  { id: 'agent', label: 'Bob\'s dina-agent', sub: 'External Python process' },
+];
+
+// Each step carries full functional metadata so the diagram is self-explanatory.
+//   title / desc:    short labels rendered on the card
+//   io:              one-line shape notation — "INPUT → OUTPUT"
+//   input / output:  full shape + concrete example values (for the detail panel)
+//   how:             narrative of how this actor does its part
+//   comp:            links to the underlying component's source/tests
+const FLOW = [
+  { lane: 'alice', step: 1, col: 1, comp: 'screen-chat',
+    title: 'User types /ask',
+    desc: 'User types the question into the chat input and hits send.',
+    io: 'user text → ChatMessage',
+    input: 'Raw text typed in the chat screen. Example: "when does Bus 42 reach Castro?". No /command prefix — the orchestrator treats a plain message as an /ask by default.',
+    output: 'ChatMessage { role: "user", text, threadId } appended to the in-memory thread store + forwarded to the installed AskCommandHandler.',
+    how: 'The chat screen\'s onSubmit calls orchestrator.handleChat(text). command_parser recognises (or defaults to) the /ask intent and routes to makeAgenticAskHandler. No LLM call yet — the message is just captured and dispatched.' },
+
+  { lane: 'alice', step: 2, col: 2, comp: 'agentic-loop',
+    title: 'Agentic loop starts',
+    desc: 'LLM receives the user message + every tool in the registry + a behaviour-only system prompt. It autonomously picks which tool (if any) to call.',
+    io: '{messages, tools, systemPrompt} → LLM response (tool_call or text)',
+    input: '{ messages: [{role:"user", text}], tools: ToolRegistry.toDefinitions() (ONE registry fixed at bootstrap — every /ask turn sees the SAME catalog), systemPrompt: DEFAULT_ASK_SYSTEM_PROMPT (behaviour-only — it does NOT enumerate tool names). Tools reach the LLM through the provider\'s structured tools channel (Anthropic `tools`, OpenAI `tools`). Each tool carries its own description; the LLM decides relevance by semantic match, not by order.',
+    output: 'Whatever the LLM decides. For THIS query it emits tool_call { name: "geocode", arguments: { place: "Castro, SF" } } because geocode\'s description best matches "resolve a place name into coordinates". A different query ("tell me a joke") would return plain text — no tool call — and the loop would terminate.',
+    how: 'runAgenticTurn is a generic multi-turn tool-use loop (same pattern as Anthropic Messages API tool_use / OpenAI function-calling). Each turn: send messages + tools to the provider; if the response carries tool_calls → execute each via ToolRegistry, feed results back as tool_result messages, loop; if plain text → terminate. Scaling the agent = register another tool in the bootstrap registry. No prompt edit, no loop change — the tool\'s own description is what teaches the LLM when to call it. The current registry carries only the 3 Bus Driver tools because that is what this milestone wires in; memory recall / calendar / vault-search etc. would just be additional registry entries when those capabilities land.' },
+
+  { lane: 'alice', step: 3, col: 3, comp: 'bus-driver-tools',
+    title: 'geocode tool executes',
+    desc: 'Tool handler (whatever the LLM chose in step 2) runs. For this query: Nominatim (OSM) resolves "Castro, SF" to coordinates.',
+    io: '{place: string} → {lat, lng}',
+    input: '{ place: "Castro, SF" } — the arguments the LLM emitted in its tool_call.',
+    output: '{ lat: 37.7609, lng: -122.4350 } — fed back to the LLM as a tool_result in the next turn.',
+    how: 'The geocode tool handler delegates to an injected GeocodeResolver (Nominatim in prod, fixture in tests). The LLM receives the result in the next turn and decides what to do next — not necessarily search_public_services; for a pure "where is Castro?" question it would just answer. In THIS scenario the model sees unresolved coords it now has, a question still about Bus 42, and the search_public_services tool\'s description saying "find providers near a location" — so it picks that next.' },
+
+  { lane: 'appview', step: 4, col: 4, comp: 'appview-client',
+    title: 'search_public_services',
+    desc: 'AppView indexes PDS service-profile records; returns providers matching capability + location.',
+    io: '{capability, lat, lng, radiusKm?} → ServiceProfile[]',
+    input: '{ capability: "eta_query", lat: 37.76, lng: -122.43, radiusKm: 5 } — forwarded from the LLM\'s tool_call arguments.',
+    output: 'Array of matching providers, each { did: "did:plc:busbot", name: "SFMTA Bus 42", capabilities: ["eta_query"], capabilitySchemas: { eta_query: { schemaHash: "4413..." } }, distanceKm: 0.4 }. Sorted by distance.',
+    how: 'AppView is an external service (separate server). It ingests com.dina.service.profile records from the PDS firehose and indexes them. The XRPC endpoint com.dina.service.search runs a geo-bounded query against that index, filters by capability, and returns candidates — including each provider\'s published schemaHash so the requester can pin the exact schema version when calling.' },
+
+  { lane: 'alice', step: 5, col: 5, comp: 'service-query-orchestrator',
+    title: 'query_service tool call',
+    desc: 'LLM picks the top candidate. Client-side params validation runs FIRST to avoid burning the TTL on bad requests.',
+    io: '{to_did, capability, params, schema_hash, ttl} → {taskId, queryId, deduped}',
+    input: '{ to_did: "did:plc:busbot", capability: "eta_query", params: { location: {lat, lng}, route_id: "42" }, schema_hash: "4413...", ttl_seconds: 60 } — the LLM hand-picked the top candidate from step 4\'s output and pinned its schema_hash.',
+    output: '{ taskId: "sq-q-abc123", queryId: "q-abc123", deduped: false } — returned synchronously; the ACTUAL answer arrives later via workflow event (step 22).',
+    how: 'validateParamsClientSide checks params against the registered eta_query validator BEFORE any network call. Then ServiceQueryOrchestrator.issueQuery hands off to BrainCoreClient.sendServiceQuery which issues the HTTP POST.' },
+
+  { lane: 'alice', step: 6, col: 6, comp: 'brain-core-client',
+    title: 'POST /v1/service/query',
+    desc: 'Signed request dispatched via in-process router (no network hop on mobile).',
+    io: 'Ed25519-signed request → {task_id, query_id, deduped}',
+    input: 'Method: POST, Path: /v1/service/query, Headers: { X-DID, X-Timestamp, X-Nonce, X-Signature, Content-Type }, Body: { to_did, capability, params, ttl_seconds, schema_hash, query_id }. Signature is Ed25519 over the canonical tuple (method + path + query + timestamp + nonce + sha256(body)).',
+    output: '200 { task_id: "sq-<queryId>", query_id, deduped: false } (or { deduped: true } on retry with the same idempotency key).',
+    how: 'On mobile, signedDispatch short-circuits past HTTP — the request object is handed DIRECTLY to CoreRouter.handle(). Same canonical signature + auth middleware pipeline as a real HTTP request, but zero sockets.' },
+
+  { lane: 'alice', step: 7, col: 7, comp: 'route-handlers',
+    title: 'Create service_query task',
+    desc: 'Idempotency-keyed WorkflowTask persisted in SQLite — survives app restart.',
+    io: 'validated body → WorkflowTask (service_query, created)',
+    input: 'Validated body + computed idempotency_key = SHA256("<to_did>|<capability>|<canonicalJSON(params)>"). Canonical JSON sorts object keys recursively so {lat,lng} and {lng,lat} produce identical keys.',
+    output: 'WorkflowTask { id: "sq-<queryId>", kind: "service_query", state: "created", correlation_id: queryId, payload: JSON.stringify(body), expires_at: now + ttl_seconds }. Row inserted into workflow_tasks.',
+    how: 'WorkflowService.create guards on kind/origin/priority shape, then persists via repo. If a non-terminal task with the same idempotency_key already exists (same question asked twice), returns that task with { deduped: true } INSTEAD of creating a duplicate — this is what makes /v1/service/query safe under LLM retries.' },
+
+  { lane: 'alice', step: 8, col: 8, comp: 'd2d-send',
+    title: 'sendD2D service.query',
+    desc: '6-stage egress: build → bypass-check → sign → seal → deliver → outbox-on-failure.',
+    io: 'ServiceQueryBody → sealed envelope over MsgBox',
+    input: 'ServiceQueryBody { query_id, capability, params, ttl_seconds, schema_hash } + recipient DID (Bus 42\'s did:plc:busbot).',
+    output: 'Sealed envelope { c: base64(NaCl_seal(body, bob_pubkey)), s: hex(Ed25519_sign(body)) } POSTed to MsgBox /forward. Opens a REQUESTER WINDOW {peer_did, query_id, capability} so the matching service.response can be accepted back WITHOUT going through the contact gate.',
+    how: 'build ServiceQueryBody → evaluateServiceEgressBypass (publicServiceResolver says "Bus 42 is public" → skip contact gate) → signRequest (Ed25519 over canonical) → sealMessage (NaCl sealed box for Bob\'s pubkey — only Bob can decrypt) → deliverMessage (chooses MsgBox transport from Bob\'s DID document) → POST /forward. On network failure, the envelope lands in the outbox for retry.' },
+
+  { lane: 'alice', step: 9, col: 9, comp: 'agentic-loop',
+    title: '"Asking Bus 42…" (LLM acks)',
+    desc: 'LLM receives the tool_result, emits a short ack, and terminates. The real answer lands asynchronously at step 23.',
+    io: '{taskId} → final text message',
+    input: 'Tool_result from step 5: { taskId, queryId, deduped }.',
+    output: 'Final LLM text: "Asking Bus 42 — I\'ll let you know when they reply." No more tool_calls → loop terminates.',
+    how: 'The agentic loop terminates when the LLM returns plain text. The ack is shown immediately so the user isn\'t left hanging. The actual ETA arrives independently via the workflow-event path — steps 10 through 23 are driven by asynchronous handoffs, not the original LLM turn.' },
+
+  { lane: 'msgbox', step: 10, col: 10, comp: 'msgbox-forward',
+    title: 'POST /forward (relay)',
+    desc: 'MsgBox verifies the sender signature + pushes the envelope down Bob\'s already-open WS.',
+    io: 'signed POST /forward → WS push to Bob',
+    input: 'Headers: X-Recipient-DID (Bob), X-Sender-DID (Alice), X-Timestamp, X-Nonce, X-Signature, X-Sender-Pub. Body: sealed envelope bytes.',
+    output: '200 Accepted to Alice. Envelope pushed over Bob\'s authenticated WebSocket if he\'s online, else persisted to Bob\'s inbox.',
+    how: 'MsgBox is zero-trust — it verifies only that the signature is valid and X-Sender-Pub matches X-Sender-DID. It CANNOT read the body (NaCl-sealed for Bob). MsgBox looks up Bob\'s active WS session by DID and ships the envelope down that WS. If Bob\'s WS is down (phone backgrounded, killed, or offline), the envelope is buffered in Bob\'s inbox and replayed on his next connect.' },
+
+  { lane: 'bob', step: 11, col: 11, comp: 'msgbox-handlers',
+    title: 'WS push → onmessage',
+    desc: 'Bob\'s home node holds a persistent authenticated WS to MsgBox. Inbound envelopes arrive via server push over that WS.',
+    io: 'WS frame → handleInboundD2D',
+    input: 'JSON WS frame { type: "d2d", envelope: {c, s}, from: X-Sender-DID }. Bob established this WS at app startup (connectToMsgBox → auth_challenge → signed auth_response → authenticated=true).',
+    output: 'envelope handed to receive_pipeline for unseal + processing.',
+    how: 'Not HTTP polling — Bob\'s phone OWNS an authenticated WebSocket to MsgBox. ws.onmessage dispatches by envelope type (d2d / rpc / cancel) to registered handlers. On disconnect, MsgBox buffers further messages in Bob\'s inbox; the home node reconnects with exponential backoff and drains the inbox automatically. At-least-once delivery guarantee: if the phone is killed, messages persist on MsgBox until reconnect.' },
+
+  { lane: 'bob', step: 12, col: 12, comp: 'receive-pipeline',
+    title: 'Ingress pipeline + provider window',
+    desc: '8-stage ingress check. service.query bypasses the contact gate IF the capability is configured locally.',
+    io: 'sealed envelope → parsed ServiceQueryBody + provider window opened',
+    input: 'Sealed envelope bytes + sender DID (Alice).',
+    output: 'Parsed ServiceQueryBody handed to Brain\'s D2D dispatcher + an entry opened in providerWindow { peer_did: alice, query_id, capability }. This window AUTHORISES a matching service.response to egress without going through the contact gate.',
+    how: 'unseal → verifyRequest (Ed25519) → replay-cache (reject seen nonces) → V1 type check → body-size cap → blocked-sender check → evaluateServiceIngressBypass: "is eta_query configured in ServiceConfig?". If yes → open provider window + bypass contact gate + hand body to Brain. If no → drop. The provider window is one-shot — consumed when the response egresses OR expires with TTL.' },
+
+  { lane: 'bob', step: 13, col: 13, comp: 'service-handler',
+    title: 'Validate + create delegation task',
+    desc: 'Schema_hash check, params validation, then a queued delegation task sits waiting for an agent to claim it.',
+    io: 'ServiceQueryBody → WorkflowTask (delegation, queued)',
+    input: 'Parsed body from step 12 + local ServiceConfig + capability registry (eta_query validator).',
+    output: 'WorkflowTask { id: "svc-exec-<uuid>", kind: "delegation", state: "queued", correlation_id: query_id, payload: {type: "service_query_execution", from_did, query_id, capability, params, ttl_seconds, service_name, schema_hash}, expires_at: now + ttl_seconds }.',
+    how: 'checkSchemaHash (published vs query\'s) — mismatch → drop with schema_version_mismatch. validateParams (hand-written runtime validator mirroring the JSON Schema) — invalid → drop. If responsePolicy=="auto" → createExecutionTaskRaw puts the task in "queued" state. If responsePolicy=="review" → approval task in "pending_approval" + operator notifier fires. Bob\'s home node DOES NOT execute — it only validates and enqueues.' },
+
+  { lane: 'agent', step: 14, col: 14, comp: 'core-router',
+    title: 'POST /v1/workflow/tasks/claim',
+    desc: 'dina-agent periodically polls via MsgBox-RPC to claim the next queued delegation. Atomic claim + lease.',
+    io: '{lease_ms} → WorkflowTask(running) | 204',
+    input: 'POST body { lease_ms: 30000 }. Headers: Ed25519-signed with the agent\'s device key (agent is registered with role="agent" on Bob\'s home node). Transport: MsgBox-RPC — the request is a sealed HTTP-over-WS envelope relayed via MsgBox, not direct HTTP.',
+    output: '200 { task: WorkflowTask } with state="running", agent_did set, lease_expires_at = nowMs + 30000. OR 204 No Content if no queued delegation exists (agent retries after a short delay).',
+    how: 'Atomic SQL in a transaction: SELECT oldest queued+unexpired delegation → UPDATE SET state="running", agent_did=?, lease_expires_at=? WHERE id=? AND state="queued" → APPEND workflow_events(event_kind="claimed"). Concurrent agents serialize: exactly one wins per task; losers get 204 and retry. The lease is a watchdog — if the agent dies, LeaseExpirySweeper reverts the task to queued within 60s.' },
+
+  { lane: 'agent', step: 15, col: 15, comp: 'openclaw',
+    title: 'OpenClaw runs eta_query',
+    desc: 'Agent hands the capability + params to OpenClaw\'s registered transit runner (GTFS + live AVL + traffic model).',
+    io: '{capability, params} → EtaQueryResult',
+    input: '{ capability: "eta_query", params: { location: {lat, lng}, route_id: "42" } }.',
+    output: 'EtaQueryResult { eta_minutes: 45, vehicle_type: "bus", route_name: "42", current_location: {lat, lng}, stop_name: "Castro", map_url: "https://maps.google.com/...", status: "on_route" }. Shape conforms to EtaQueryResultSchema (JSON Schema) registered at capability-bind time.',
+    how: 'OpenClaw is a capability-execution sandbox living alongside dina-agent. For transit, the handler consults GTFS schedules + AVL (automatic vehicle locator) feeds + a traffic model and produces an ETA. No dina-mobile code runs here — OpenClaw is a separate pluggable runtime.' },
+
+  { lane: 'agent', step: 16, col: 16, comp: 'core-router',
+    title: 'POST /:id/heartbeat',
+    desc: 'While running, agent extends its lease every ~5–10s so LeaseExpirySweeper doesn\'t reclaim.',
+    io: '{lease_ms} → {ok: true} | 404 | 409',
+    input: 'POST /v1/workflow/tasks/<id>/heartbeat with { lease_ms: 30000 } + agent Ed25519 signature.',
+    output: '200 { ok: true } if the agent still holds this task. 404 if the task does not exist. 409 if a DIFFERENT agent owns it (this agent\'s lease expired; the sweeper reclaimed; another agent picked it up).',
+    how: 'UPDATE workflow_tasks SET lease_expires_at = nowMs + leaseMs, updated_at = nowMs WHERE id = ? AND state = "running" AND agent_did = ?. Zero rows affected → 409 (agent lost the task). On 409 the agent MUST stop heartbeating and discard its in-progress work — someone else is handling it now.' },
+
+  { lane: 'agent', step: 17, col: 17, comp: 'core-router',
+    title: 'POST /:id/complete',
+    desc: 'Agent ships the result atomically — state flip + audit event in one SQL transaction.',
+    io: '{result, result_summary, agent_did} → WorkflowTask(completed)',
+    input: 'POST /v1/workflow/tasks/<id>/complete with { result: JSON.stringify(etaResult), result_summary: "Bus 42 — 45 min to Castro", agent_did: "did:plc:bob-agent" }.',
+    output: '200 { task: WorkflowTask } with state="completed" and result attached. An event workflow_events { event_kind: "completed", needs_delivery: true, details: {response_status, capability, service_name} } is appended atomically — this event is what wakes the Response Bridge.',
+    how: 'completeWithDetails runs an atomic transaction: UPDATE task state="completed" + attach result + agent_did + updated_at → APPEND workflow_event(completed, needs_delivery=true). Both succeed or both rollback — no partial state. The needs_delivery=true flag is the hook WorkflowEventConsumer (on Bob) uses to know something needs attention.' },
+
+  { lane: 'bob', step: 18, col: 18, comp: 'response-bridge-sender',
+    title: 'Response Bridge fires',
+    desc: 'WorkflowService.complete notices payload.type="service_query_execution" and auto-fires sendD2D(service.response).',
+    io: 'WorkflowTask (completed) → sendResponse(to_did, ServiceResponseBody)',
+    input: 'The just-completed delegation task. Bridge reads payload.{from_did, query_id, capability, ttl_seconds, schema_hash} + the attached result.',
+    output: 'Invokes the injected ResponseBridgeSender with ServiceResponseBody { query_id, capability, status: "success", result, ttl_seconds }. Sender errors are SWALLOWED (task is already complete; CORE-P4-I05/I06 outbox sweeper would handle retry durability).',
+    how: 'bridgeServiceQueryCompletion runs INSIDE WorkflowService.complete, synchronously after the completion tx. Parses the payload, wraps the result into a ServiceResponseBody, calls the injected sender. This closes the loop: Alice\'s request → Bob\'s execution → automatic response — no extra code on the provider side.' },
+
+  { lane: 'bob', step: 19, col: 19, comp: 'd2d-send',
+    title: 'sendD2D service.response',
+    desc: 'Egress pipeline reserves + consumes the provider window from step 12, signs + seals the response.',
+    io: 'ServiceResponseBody → sealed envelope over MsgBox',
+    input: 'ServiceResponseBody from step 18 + recipient = Alice\'s DID.',
+    output: 'Sealed envelope POSTed to MsgBox /forward with 6 signed headers. Provider window atomically consumed on success; released (for retry) on failure.',
+    how: 'RESERVE provider window (atomic flag flip — two racing responses: exactly one wins) → sign → seal → POST /forward. Success → COMMIT window (one-shot consumed). Failure → RELEASE window (retry can re-reserve). No matching provider window = hard drop — prevents unsolicited responses from leaking out.' },
+
+  { lane: 'msgbox', step: 20, col: 20, comp: 'msgbox-forward',
+    title: 'Relay back to Alice',
+    desc: 'Mirror of step 10 — Alice\'s home node holds her own authenticated WS; MsgBox pushes the envelope down it.',
+    io: 'POST /forward → WS push to Alice',
+    input: 'MsgBox receives the envelope from Bob; recipient header names Alice\'s DID.',
+    output: 'Envelope pushed down Alice\'s active WS (or buffered in Alice\'s inbox if her phone is offline — same at-least-once semantics as step 10).',
+    how: 'Same relay path as step 10. Alice\'s home node also owns a persistent WS to MsgBox (opened at app startup); MsgBox server-pushes the envelope when it arrives.' },
+
+  { lane: 'alice', step: 21, col: 21, comp: 'receive-pipeline',
+    title: 'Ingress → service_query task completed',
+    desc: 'Alice\'s receive pipeline consumes her requester window (opened in step 8) and marks the task complete.',
+    io: 'ServiceResponseBody → workflow_task (completed) + workflow_event emitted',
+    input: 'Sealed envelope from step 20.',
+    output: 'workflow_tasks row for "sq-<queryId>" transitions created → completed + workflow_events { event_kind: "completed", needs_delivery: true, details: {response_status, capability, service_name, response_body} } is appended.',
+    how: 'Receive pipeline: unseal → verify → evaluateServiceIngressBypass (consumes the ONE-SHOT requester window opened in step 8 — that\'s what authorises this inbound response; no window = drop) → findServiceQueryTask(query_id, from_did, capability) matches the original task → completeWithDetails atomically marks it complete and emits the delivery event.' },
+
+  { lane: 'alice', step: 22, col: 22, comp: 'workflow-event-consumer',
+    title: 'WorkflowEventConsumer delivers',
+    desc: 'Brain polls Core for undelivered events, formats the completion, writes to Alice\'s chat thread.',
+    io: 'GET /v1/workflow/events?needs_delivery=true → addDinaResponse',
+    input: 'Poll response: array of [{ event_id, event_kind, task_id, details }].',
+    output: 'For each event where event_kind="completed" AND task.kind="service_query": call formatServiceQueryResult(details) → text, then addDinaResponse(threadId, text, [taskId, capability]). The event is ACKed only AFTER deliver resolves (ack-after-effects).',
+    how: 'Consumer runs a poll tick every N seconds. For each event: fetch the related task, merge event details with the stored ServiceResponseBody, format via formatServiceQueryResult — for eta_query this produces the 3-line summary. Deliver pushes a ChatMessage into the thread store. If deliver throws, the event is NOT acked — the scheduler redrives next tick.' },
+
+  { lane: 'alice', step: 23, col: 23, comp: 'screen-chat',
+    title: 'Chat bubble lands',
+    desc: 'Final answer visible to the user, with a tap-able source chip.',
+    io: 'ChatMessage → rendered bubble',
+    input: 'ChatMessage { role: "dina", text: "Bus 42\\n45 min to Castro\\nhttps://maps.google.com/...", sources: [taskId, capability] }.',
+    output: 'A chat bubble rendered in the thread. Plain URL auto-linkified. Source chip tap-able for provenance (shows which service and which task produced the answer).',
+    how: 'React re-renders when the thread updates. The source chip lets the user drill into "which service answered" — important for trust/attribution when multiple providers could have responded.' },
+];
+
+// ===========================================================================
+// Rendering
+// ===========================================================================
+function render() {
+  renderComponents();
+  renderSwimlane();
+}
+
+function renderComponents() {
+  const view = document.getElementById('components-view');
+  const byLayer = { ext: [], app: [], brain: [], core: [] };
+  for (const [id, c] of Object.entries(COMPONENTS)) {
+    const layer = GROUPS[c.group]?.layer;
+    if (!layer) continue;
+    byLayer[layer].push({ id, ...c });
+  }
+  const order = ['app', 'brain', 'core', 'ext'];
+  const layerMap = { app: 'Mobile app (top)', brain: 'Brain (middle)', core: 'Core (bottom)', ext: 'External' };
+  view.innerHTML = order.map(layer => {
+    const layerInfo = LAYERS[layer];
+    const comps = byLayer[layer];
+    if (!comps.length) return '';
+    const groupsInLayer = new Map();
+    for (const c of comps) {
+      const g = c.group;
+      if (!groupsInLayer.has(g)) groupsInLayer.set(g, []);
+      groupsInLayer.get(g).push(c);
+    }
+    const groupsHtml = Array.from(groupsInLayer.entries()).map(([g, items]) => `
+      <div class="layer-group">
+        <div class="group-label">${GROUPS[g].label}</div>
+        <div class="cards">
+          ${items.map(c => `
+            <div class="card" data-id="${c.id}">
+              <div class="card-name">${c.name}</div>
+              <div class="card-kind">${c.kind ?? ''}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+    return `
+      <section class="layer">
+        <div class="layer-header">
+          <div class="layer-badge ${layerInfo.css}"></div>
+          <div>
+            <div class="layer-title">${layerInfo.name}</div>
+          </div>
+          <div class="layer-sub">${comps.length} components · ${layerInfo.sub}</div>
+        </div>
+        ${groupsHtml}
+      </section>
+    `;
+  }).join('');
+
+  view.addEventListener('click', (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    selectComponent(card.dataset.id);
+  });
+}
+
+function renderSwimlane() {
+  const view = document.getElementById('swimlane-view');
+  const totalSteps = FLOW.length;
+  const STEP_WIDTH = 280; // px — also drives the background tick pattern
+
+  // Build one row per lane. Each lane owns a horizontal track with
+  // `totalSteps` virtual columns; steps render at their step-number column.
+  const lanesHtml = LANES.map(lane => {
+    const laneSteps = FLOW.filter(s => s.lane === lane.id);
+    const stepsHtml = laneSteps.map(s => `
+      <div class="step"
+           style="grid-column: ${s.step};"
+           data-comp="${s.comp}"
+           data-step="${s.step}"
+           data-lane="${lane.id}">
+        <div><span class="step-num">${s.step}</span><span class="step-title">${escapeHtml(s.title)}</span></div>
+        <div class="step-desc">${escapeHtml(s.desc)}</div>
+        ${s.io ? `<div class="step-io">${escapeHtml(s.io)}</div>` : ''}
+      </div>
+    `).join('');
+    return `
+      <div class="swim-lane">
+        <div class="lane-label">
+          <div>${lane.label}</div>
+          <div class="lane-sub">${lane.sub}</div>
+        </div>
+        <div class="lane-track"
+             style="grid-template-columns: repeat(${totalSteps}, ${STEP_WIDTH}px); --step-width: ${STEP_WIDTH}px;">
+          ${stepsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const totalTrackWidth = totalSteps * STEP_WIDTH;
+
+  view.innerHTML = `
+    <div class="swimlane-wrap">
+      <div class="swimlane-title">Bus Driver end-to-end · "when does Bus 42 reach Castro?"</div>
+      <div class="swimlane-sub">${totalSteps} steps across ${LANES.length} actors · click any step to inspect the component · dashed arrows show lane hand-offs</div>
+      <div class="swim-scroll">
+        <div class="swim-grid" style="min-width: ${170 + totalTrackWidth}px;">
+          ${lanesHtml}
+          <svg class="swim-arrows" id="swim-arrows"
+               style="left: 170px; width: ${totalTrackWidth}px;"
+               preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+      <div class="swim-legend">
+        <strong>Preamble (not drawn — these happen at app startup, once):</strong> Alice\'s phone, Bob\'s phone, and Bob\'s dina-agent all open persistent authenticated WebSockets <em>to</em> MsgBox. Each side signs an auth_challenge with its Ed25519 key; MsgBox records the DID → WS mapping. From that point on, the phones and agent don\'t poll — MsgBox <em>pushes</em> envelopes down their open WSes. If a side goes offline, MsgBox buffers envelopes in that side\'s inbox and replays them on reconnect (at-least-once delivery).
+        <br><br>
+        <strong>Reading the lanes:</strong> time flows left-to-right; each row is one actor. Orange = Alice\'s phone, purple = external infrastructure (AppView + MsgBox), green = Bob\'s phone (provider home node), blue = Bob\'s external dina-agent. <strong>Click any step</strong> to see its full input, output, and how-it-works in the bottom panel. The monospace line on each card is a short shape notation.
+        <br><br>
+        <strong>Happy path (three phases):</strong>
+        <ol style="margin: 8px 0 8px 20px; padding: 0;">
+          <li><em>Alice asks:</em> Alice\'s home node runs a generic multi-turn agentic tool-use loop (steps 1–9). The ToolRegistry is fixed at bootstrap — EVERY /ask turn sees the SAME set of tools. The LLM autonomously chooses which tool (if any) to call per turn based on each tool\'s description. For a bus-query the emergent chain is geocode → search_public_services → query_service; for a conversational question ("tell me a joke") the LLM returns plain text and the loop terminates without any tool call. Adding a new capability in future (memory recall, calendar, vault-search) is a ToolRegistry insertion — no prompt edit, no loop rewrite. The final tool_call produces a service.query that lands in MsgBox (10), pushed to Bob\'s WS (11).</li>
+          <li><em>Bob validates + enqueues, agent executes:</em> Bob\'s home node opens a provider window, validates schema_hash, and creates a <code>delegation</code> task (12–13). Bob does NOT execute — dina-agent polls Core via MsgBox-RPC to <em>claim</em> (14), runs OpenClaw (15), heartbeats while running (16), then completes (17). Agent-pull is the one place the diagram has real polling; everything else is push-over-WS.</li>
+          <li><em>Response bridges back:</em> Completing the delegation synchronously fires the Response Bridge which <em>sends a service.response D2D</em> back to Alice (18–19). MsgBox relays it (20); Alice\'s receive pipeline consumes her requester window and completes the original service_query task (21); WorkflowEventConsumer polls, formats, and writes to the chat thread (22); React re-renders (23).</li>
+        </ol>
+        <strong>Agent-crash path (not drawn):</strong> if dina-agent dies between steps 14 and 17, heartbeats stop. Core\'s <code>LeaseExpirySweeper</code> ticks every 60s, calls <code>expireLeasedTasks</code>, and reverts the task to <code>queued</code> + appends a <code>lease_expired</code> audit event. Any subsequent <code>/claim</code> picks it up — at-most-once completion, at-least-once attempt.
+        <br><br>
+        <strong>Durability invariant:</strong> every hand-off is idempotent + crash-safe. Service-query idempotency key (step 7) dedups retries. Response atomic transitions (steps 17, 21) guarantee state + event emission in one SQL tx. Requester + provider windows are one-shot so replays can\'t leak. A restart on any side resumes by replaying workflow_task state — nothing is kept in memory that isn\'t also in SQLite.
+      </div>
+    </div>
+  `;
+
+  drawSwimArrows();
+  window.addEventListener('resize', drawSwimArrows);
+
+  view.addEventListener('click', (e) => {
+    const stepEl = e.target.closest('.step');
+    if (!stepEl) return;
+    document.querySelectorAll('.step.selected').forEach(n => n.classList.remove('selected'));
+    stepEl.classList.add('selected');
+    const stepNum = Number(stepEl.dataset.step);
+    selectStep(stepNum);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function drawSwimArrows() {
+  const svg = document.getElementById('swim-arrows');
+  if (!svg) return;
+  const grid = svg.parentElement; // .swim-grid
+  const gridRect = grid.getBoundingClientRect();
+  const svgRect = svg.getBoundingClientRect();
+  // Arrows span the step columns only — offset relative to the SVG's own rect.
+  const offsetX = svgRect.left - gridRect.left;
+  const offsetY = svgRect.top - gridRect.top;
+  svg.setAttribute('height', gridRect.height - offsetY);
+  svg.setAttribute('width', gridRect.width - offsetX);
+  svg.setAttribute('viewBox', `0 0 ${gridRect.width - offsetX} ${gridRect.height - offsetY}`);
+
+  const paths = [];
+  const sortedSteps = [...FLOW].sort((a, b) => a.step - b.step);
+  for (let i = 0; i < sortedSteps.length - 1; i++) {
+    const a = sortedSteps[i];
+    const b = sortedSteps[i + 1];
+    const aEl = document.querySelector(`.step[data-step="${a.step}"]`);
+    const bEl = document.querySelector(`.step[data-step="${b.step}"]`);
+    if (!aEl || !bEl) continue;
+    const ar = aEl.getBoundingClientRect();
+    const br = bEl.getBoundingClientRect();
+    // Convert to SVG-local coords.
+    const x1 = ar.right - svgRect.left;
+    const y1 = ar.top + ar.height / 2 - svgRect.top;
+    const x2 = br.left - svgRect.left;
+    const y2 = br.top + br.height / 2 - svgRect.top;
+    // Bezier that bends when switching lanes, straight when same lane.
+    const sameLane = a.lane === b.lane;
+    const path = sameLane
+      ? `M ${x1} ${y1} L ${x2 - 6} ${y2}`
+      : `M ${x1} ${y1} C ${x1 + 30} ${y1}, ${x2 - 30} ${y2}, ${x2 - 6} ${y2}`;
+    paths.push(`<path d="${path}" />`);
+    // Arrowhead at (x2 - 6, y2)
+    paths.push(
+      `<polygon points="${x2 - 6},${y2 - 4} ${x2},${y2} ${x2 - 6},${y2 + 4}" />`
+    );
+  }
+  svg.innerHTML = paths.join('');
+}
+
+// ===========================================================================
+// Detail panel
+// ===========================================================================
+
+/**
+ * Render a step click in the bottom panel. Shows the step-specific
+ * INPUT / OUTPUT / HOW metadata alongside the underlying component's
+ * source + tests + ref pills.
+ */
+function selectStep(stepNum) {
+  const s = FLOW.find(x => x.step === stepNum);
+  if (!s) return;
+  const c = COMPONENTS[s.comp];
+  const lane = LANES.find(l => l.id === s.lane);
+  const layer = c ? (GROUPS[c.group]?.layer ?? 'core') : 'core';
+  const layerName = c ? LAYERS[layer].name : '';
+  const groupLabel = c ? GROUPS[c.group].label : '';
+  const panel = document.getElementById('detail-panel');
+
+  const compRefList = (ids, label) => {
+    if (!ids || !ids.length) return '';
+    const pills = ids.map(ref => {
+      const name = COMPONENTS[ref]?.name ?? ref;
+      return `<span class="ref-pill" data-ref="${ref}">${escapeHtml(name)}</span>`;
+    }).join('');
+    return `<div class="detail-section"><h3>${label}</h3><div class="detail-refs">${pills}</div></div>`;
+  };
+
+  panel.classList.add('has-selection');
+  panel.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-layer ${layer}"><span class="step-num" style="vertical-align:middle">${s.step}</span>&nbsp;&nbsp;${escapeHtml(lane?.label ?? '')}</div>
+      <div class="detail-name">${escapeHtml(s.title)}</div>
+      <div class="detail-kind">${escapeHtml(s.desc)}</div>
+    </div>
+    <div class="detail-section">
+      <h3>Input</h3>
+      <p>${escapeHtml(s.input ?? '—')}</p>
+    </div>
+    <div class="detail-section">
+      <h3>Output</h3>
+      <p>${escapeHtml(s.output ?? '—')}</p>
+    </div>
+    <div class="detail-section">
+      <h3>How it works</h3>
+      <p>${escapeHtml(s.how ?? '')}</p>
+    </div>
+    ${c?.file ? `<div class="detail-section"><h3>Component · ${escapeHtml(c.name)}</h3><div class="detail-file">${escapeHtml(c.file)}</div></div>` : ''}
+    ${c?.tests ? `<div class="detail-section"><h3>Tests</h3><div class="detail-file">${escapeHtml(c.tests)}</div></div>` : ''}
+    ${compRefList(c?.uses, 'Component depends on')}
+    ${compRefList(c?.usedBy, 'Component used by')}
+  `;
+  panel.querySelectorAll('.ref-pill').forEach(el => {
+    el.addEventListener('click', () => selectComponent(el.dataset.ref));
+  });
+}
+
+function selectComponent(id) {
+  const c = COMPONENTS[id];
+  if (!c) return;
+  document.querySelectorAll('.card.selected').forEach(n => n.classList.remove('selected'));
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (card) card.classList.add('selected');
+  const layer = GROUPS[c.group]?.layer ?? 'core';
+  const layerName = LAYERS[layer].name;
+  const panel = document.getElementById('detail-panel');
+  const refList = (ids, label) => {
+    if (!ids || !ids.length) return '';
+    const pills = ids.map(ref => {
+      const name = COMPONENTS[ref]?.name ?? ref;
+      return `<span class="ref-pill" data-ref="${ref}">${name}</span>`;
+    }).join('');
+    return `
+      <div class="detail-section">
+        <h3>${label}</h3>
+        <div class="detail-refs">${pills}</div>
+      </div>
+    `;
+  };
+  panel.classList.add('has-selection');
+  panel.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-layer ${layer}">${layerName} · ${GROUPS[c.group].label}</div>
+      <div class="detail-name">${c.name}</div>
+      <div class="detail-kind">${c.kind ?? ''}</div>
+    </div>
+    <div class="detail-section">
+      <p>${c.desc ?? ''}</p>
+    </div>
+    ${c.detail ? `<div class="detail-section"><h3>Details</h3><p>${c.detail}</p></div>` : ''}
+    ${c.file ? `<div class="detail-section"><h3>Source</h3><div class="detail-file">${c.file}</div></div>` : ''}
+    ${c.tests ? `<div class="detail-section"><h3>Tests</h3><div class="detail-file">${c.tests}</div></div>` : ''}
+    ${refList(c.uses, 'Depends on')}
+    ${refList(c.usedBy, 'Used by')}
+  `;
+  panel.querySelectorAll('.ref-pill').forEach(el => {
+    el.addEventListener('click', () => selectComponent(el.dataset.ref));
+  });
+}
+
+// ===========================================================================
+// View toggle + search
+// ===========================================================================
+document.querySelectorAll('.view-toggle').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.view-toggle').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const view = btn.dataset.view;
+    document.getElementById('components-view').style.display = view === 'components' ? '' : 'none';
+    document.getElementById('swimlane-view').style.display = view === 'swimlane' ? 'block' : 'none';
+    // Swimlane scrolls left-to-right, so the detail panel docks at the bottom
+    // there. Components view keeps the right-side panel.
+    document.querySelector('main').classList.toggle('layout-bottom', view === 'swimlane');
+    if (view === 'swimlane') {
+      // Bounding rects are zero while hidden — redraw arrows now that the
+      // grid is measurable. Two RAFs: the first lets the display change
+      // flush, the second measures after layout.
+      requestAnimationFrame(() => requestAnimationFrame(() => drawSwimArrows()));
+    }
+  });
+});
+
+document.getElementById('search').addEventListener('input', (e) => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('.card').forEach(card => {
+    const id = card.dataset.id;
+    const c = COMPONENTS[id];
+    const haystack = [c.name, c.kind, c.desc, c.detail, c.file, c.group].filter(Boolean).join(' ').toLowerCase();
+    const hit = q === '' || haystack.includes(q);
+    card.classList.toggle('filter-hidden', !hit);
+  });
+});
+
+render();
+</script>
+
+</body>
+</html>

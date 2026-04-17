@@ -10,6 +10,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   TextInput, Alert, ActivityIndicator,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { colors, spacing, radius, shadows } from '../src/theme';
 import {
   PROVIDERS, saveApiKey, getApiKey, removeApiKey, maskKey,
@@ -26,6 +27,7 @@ interface ProviderState {
 }
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const [providerStates, setProviderStates] = useState<Record<ProviderType, ProviderState>>({
     openai: { configured: false, keyPreview: null, loading: true },
     gemini: { configured: false, keyPreview: null, loading: true },
@@ -216,6 +218,19 @@ export default function SettingsScreen() {
           );
         })}
       </View>
+
+      {/* Service sharing — drill-down to the service-settings screen */}
+      <SettingsSection title="SERVICE SHARING">
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => router.push('/service-settings')}
+          accessibilityRole="button"
+          accessibilityLabel="Open Service Sharing settings"
+        >
+          <Text style={styles.rowLabel}>Configure service profile</Text>
+          <Text style={styles.rowValue}>{'\u203A'}</Text>
+        </TouchableOpacity>
+      </SettingsSection>
 
       {/* Security */}
       <SettingsSection title="SECURITY">

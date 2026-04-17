@@ -18,7 +18,7 @@ import { multibaseToPublicKey, deriveDIDKey } from '../identity/did';
 import { unregisterDevice as unregisterDeviceAuth } from '../auth/caller_type';
 import { getDeviceRepository } from './repository';
 
-export type DeviceRole = 'rich' | 'thin' | 'cli';
+export type DeviceRole = 'rich' | 'thin' | 'cli' | 'agent';
 export type AuthType = 'ed25519' | 'token';
 
 export interface PairedDevice {

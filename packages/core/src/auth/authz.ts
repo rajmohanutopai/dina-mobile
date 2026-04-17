@@ -77,6 +77,18 @@ const AUTHZ_RULES: Array<{ prefix: string; allowed: Set<CallerType> }> = [
   // D2D messaging — Brain
   { prefix: '/v1/msg/',              allowed: new Set(['brain']) },
 
+  // Service discovery + workflow (Bus Driver scenario) — Brain owns publish
+  // flow + orchestrates queries; Admin can read/write config from the UI.
+  { prefix: '/v1/service/',          allowed: new Set(['brain', 'admin']) },
+
+  // Workflow-task lifecycle — Brain owns the surface; Admin reads for
+  // diagnostics + approves from the app UI. Paired dina-agent devices
+  // (role='agent') additionally claim + heartbeat + progress + complete
+  // + fail delegation tasks via the /v1/workflow/tasks/ sub-tree. More
+  // specific prefix listed first so agent rule wins for task endpoints.
+  { prefix: '/v1/workflow/tasks/',   allowed: new Set(['brain', 'admin', 'agent']) },
+  { prefix: '/v1/workflow/',         allowed: new Set(['brain', 'admin']) },
+
   // User-facing API — Device (app UI) + Admin
   { prefix: '/api/v1/ask',           allowed: new Set(['device', 'admin', 'brain']) },
   { prefix: '/api/v1/remember',      allowed: new Set(['device', 'admin', 'brain']) },

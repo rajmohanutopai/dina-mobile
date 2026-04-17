@@ -259,6 +259,20 @@ export const D2D_V1_MESSAGE_TYPES = [
   'safety.alert',
   'trust.vouch.request',
   'trust.vouch.response',
+  'service.query',
+  'service.response',
+] as const;
+
+/**
+ * D2D message types that are ephemeral — never persisted in the vault,
+ * regardless of whether they carry memory content.
+ *
+ * Source: core/internal/domain/message.go (D2DMemoryTypes absence)
+ */
+export const D2D_EPHEMERAL_MESSAGE_TYPES = [
+  'presence.signal',
+  'service.query',
+  'service.response',
 ] as const;
 
 export const D2D_MEMORY_TYPE_MAP: Record<string, string> = {

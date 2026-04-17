@@ -116,6 +116,103 @@ export const IDENTITY_MIGRATIONS: Migration[] = [
       ) WITHOUT ROWID
     `,
   },
+  {
+    // Bus Driver Scenario (commit f3a1bc7) — local service configuration.
+    // Schema is key-value; a single 'self' row carries the operator's
+    // JSON-encoded service profile. See service/service_config.ts.
+    version: 2,
+    name: 'service_config',
+    sql: `
+      CREATE TABLE IF NOT EXISTS service_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) WITHOUT ROWID
+    `,
+  },
+  {
+    // WS2 Workflow Tasks (commit 9c01611) — durable single-item work model
+    // used for service queries, approvals, delegations, timers, watches.
+    // Mirrors main dina's `core/internal/adapter/sqlite/workflow.go`.
+    //
+    // Index notes:
+    //   - Partial unique on idempotency_key (non-terminal rows only) lets
+    //     terminal/active tasks share the same natural key without UNIQUE
+    //     collisions. Matches Go's `idx_workflow_idem`.
+    //   - `(kind, state, expires_at)` serves the sweeper's "list expiring
+    //     approval tasks" query.
+    //   - `correlation_id` index serves `GetByCorrelationId` / `FindServiceQueryTask`.
+    //
+    // workflow_events carries delivery-attempt fields so the event fanout
+    // can be retried when Brain is offline or crashes mid-tick.
+    version: 3,
+    name: 'workflow_tasks',
+    sql: `
+      CREATE TABLE IF NOT EXISTS workflow_tasks (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        state TEXT NOT NULL,
+        correlation_id TEXT,
+        parent_id TEXT,
+        proposal_id TEXT,
+        priority TEXT NOT NULL,
+        description TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        result TEXT,
+        result_summary TEXT NOT NULL DEFAULT '',
+        policy TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        requested_runner TEXT,
+        assigned_runner TEXT,
+        agent_did TEXT,
+        run_id TEXT,
+        progress_note TEXT,
+        lease_expires_at INTEGER,
+        origin TEXT CHECK (origin IN ('','telegram','api','d2d','admin','system','cli')),
+        session_name TEXT,
+        idempotency_key TEXT,
+        expires_at INTEGER,
+        next_run_at INTEGER,
+        recurrence TEXT,
+        internal_stash TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_idem
+        ON workflow_tasks(idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+          AND state NOT IN ('completed','failed','cancelled','recorded');
+
+      CREATE INDEX IF NOT EXISTS idx_workflow_tasks_kind_state_expiry
+        ON workflow_tasks(kind, state, expires_at);
+
+      CREATE INDEX IF NOT EXISTS idx_workflow_tasks_correlation
+        ON workflow_tasks(correlation_id);
+
+      CREATE TABLE IF NOT EXISTS workflow_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL REFERENCES workflow_tasks(id) ON DELETE CASCADE,
+        at INTEGER NOT NULL,
+        event_kind TEXT NOT NULL,
+        needs_delivery INTEGER NOT NULL DEFAULT 0,
+        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+        next_delivery_at INTEGER,
+        delivering_until INTEGER,
+        delivered_at INTEGER,
+        acknowledged_at INTEGER,
+        delivery_failed INTEGER NOT NULL DEFAULT 0,
+        details TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_workflow_events_task_at
+        ON workflow_events(task_id, at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_workflow_events_delivery
+        ON workflow_events(needs_delivery, next_delivery_at)
+        WHERE needs_delivery = 1
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------

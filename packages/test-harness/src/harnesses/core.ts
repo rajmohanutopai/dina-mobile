@@ -62,7 +62,7 @@ function authMiddleware(validator: SignatureValidator): Middleware {
 
 /**
  * Injected signer that produces real Ed25519 auth headers.
- * Provided by the crypto module after Phase 1 implementation.
+ * Provided by the crypto module.
  */
 export type RequestSigner = (
   method: string, path: string, query: string,
@@ -79,9 +79,9 @@ export type RequestSigner = (
  * of the built-in stubs.
  *
  * The built-in stubs are minimal in-memory implementations that verify
- * the HTTP/auth/routing layer but NOT the real service behavior. Once
- * the real Core services exist (Phase 2+), inject a custom registrar
- * that wires real VaultService, StagingService, etc.
+ * the HTTP/auth/routing layer but NOT the real service behavior. To
+ * exercise the real services, inject a custom registrar that wires real
+ * VaultService, StagingService, etc.
  */
 export type RouteRegistrar = (router: Router) => void;
 
@@ -153,7 +153,7 @@ export class CoreTestHarness {
    *
    * Starts a real HTTP server on an OS-assigned port with real auth
    * middleware. Routes come from either:
-   * - `config.routeRegistrar` (real Core services — Phase 2+)
+   * - `config.routeRegistrar` (real Core services — caller-supplied)
    * - Built-in stubs (in-memory, no real services — default)
    */
   static async create(config?: CoreTestHarnessConfig): Promise<CoreTestHarness> {
@@ -171,7 +171,7 @@ export class CoreTestHarness {
     } else {
       // Built-in STUB routes — in-memory state, no real services.
       // These verify the HTTP/auth/routing layer only.
-      // Replace with real services via config.routeRegistrar in Phase 2+.
+      // Replace with real services via config.routeRegistrar.
       registerStubRoutes(router);
     }
 

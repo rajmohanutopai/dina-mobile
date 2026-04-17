@@ -9,8 +9,18 @@
  */
 
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /**
+   * Assistant-role messages that issued tool calls carry them here so the
+   * next-turn request round-trips correctly (Gemini/Anthropic/OpenAI all
+   * need the prior functionCall block before the functionResponse).
+   */
+  toolCalls?: ToolCall[];
+  /** For role='tool': the tool call this result corresponds to. */
+  toolCallId?: string;
+  /** For role='tool': the tool that was invoked. */
+  toolName?: string;
 }
 
 export interface ToolDefinition {

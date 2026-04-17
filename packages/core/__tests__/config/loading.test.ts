@@ -22,6 +22,11 @@ describe('Configuration Loading', () => {
       expect(config.rateLimit).toBe(50);
       expect(config.spoolMaxMB).toBe(500);
       expect(config.msgboxURL).toBeUndefined();
+      expect(config.appviewURL).toBeUndefined();
+      expect(config.pdsURL).toBeUndefined();
+      expect(config.plcURL).toBe('https://plc.directory');
+      expect(config.pdsHandle).toBeUndefined();
+      expect(config.pdsAdminPassword).toBeUndefined();
     });
 
     it('reads DINA_CORE_URL from env', () => {
@@ -85,6 +90,28 @@ describe('Configuration Loading', () => {
       const config = loadConfig({ DINA_RATE_LIMIT: 'abc' });
       expect(config.rateLimit).toBe(50);
     });
+
+    it('reads the full test-infra envelope from env', () => {
+      const config = loadConfig({
+        DINA_APPVIEW_URL: 'https://test-appview.dinakernel.com',
+        DINA_PDS_URL: 'https://test-pds.dinakernel.com',
+        DINA_PLC_URL: 'https://plc.directory',
+        DINA_MSGBOX_URL: 'wss://test-mailbox.dinakernel.com',
+        DINA_PDS_HANDLE: 'busdriver.test-pds.dinakernel.com',
+        DINA_PDS_ADMIN_PASSWORD: 'hunter2',
+      });
+      expect(config.appviewURL).toBe('https://test-appview.dinakernel.com');
+      expect(config.pdsURL).toBe('https://test-pds.dinakernel.com');
+      expect(config.plcURL).toBe('https://plc.directory');
+      expect(config.msgboxURL).toBe('wss://test-mailbox.dinakernel.com');
+      expect(config.pdsHandle).toBe('busdriver.test-pds.dinakernel.com');
+      expect(config.pdsAdminPassword).toBe('hunter2');
+    });
+
+    it('overrides plcURL default when DINA_PLC_URL is set', () => {
+      const config = loadConfig({ DINA_PLC_URL: 'https://plc.example' });
+      expect(config.plcURL).toBe('https://plc.example');
+    });
   });
 
   describe('validateConfig', () => {
@@ -97,6 +124,7 @@ describe('Configuration Loading', () => {
       sessionTTL: 86400,
       rateLimit: 50,
       spoolMaxMB: 500,
+      plcURL: 'https://plc.directory',
     };
 
     it('accepts valid config', () => {
@@ -155,6 +183,44 @@ describe('Configuration Loading', () => {
         rateLimit: -5,
       });
       expect(errors.length).toBe(3);
+    });
+
+    it('accepts valid appviewURL / pdsURL', () => {
+      const errors = validateConfig({
+        ...validConfig,
+        appviewURL: 'https://test-appview.dinakernel.com',
+        pdsURL: 'https://test-pds.dinakernel.com',
+      });
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects invalid appviewURL', () => {
+      const errors = validateConfig({ ...validConfig, appviewURL: 'not-a-url' });
+      expect(errors.some((e) => e.includes('appviewURL'))).toBe(true);
+    });
+
+    it('rejects invalid pdsURL', () => {
+      const errors = validateConfig({ ...validConfig, pdsURL: 'bad' });
+      expect(errors.some((e) => e.includes('pdsURL'))).toBe(true);
+    });
+
+    it('rejects empty plcURL', () => {
+      const errors = validateConfig({ ...validConfig, plcURL: '' });
+      expect(errors.some((e) => e.includes('plcURL'))).toBe(true);
+    });
+
+    it('rejects non-URL plcURL', () => {
+      const errors = validateConfig({ ...validConfig, plcURL: 'plc.directory' });
+      expect(errors.some((e) => e.includes('plcURL'))).toBe(true);
+    });
+
+    it('allows pdsHandle and pdsAdminPassword with no format check', () => {
+      const errors = validateConfig({
+        ...validConfig,
+        pdsHandle: 'busdriver.test-pds.dinakernel.com',
+        pdsAdminPassword: 'any string ok',
+      });
+      expect(errors).toEqual([]);
     });
   });
 });

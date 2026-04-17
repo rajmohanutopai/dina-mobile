@@ -1,38 +1,17 @@
 /**
- * D2D messaging stub endpoints — deferred to Phase 6.
- *
- * POST /v1/msg/send  → send a D2D message
- * GET  /v1/msg/inbox → list received D2D messages
- *
- * These are registered stubs that return 501 (Not Implemented) until
- * Phase 6 wires them to the full D2D pipeline (NaCl sealed box,
- * 4-gate egress, MsgBox relay).
- *
- * Source: ARCHITECTURE.md Task 2.81
+ * D2D messaging stub — scheduled to be wired through `sendD2D` on the
+ * D8 completion pass. For now returns 501 so callers (`BrainCoreClient.
+ * sendMessage`) fail loudly rather than silently succeeding.
  */
 
-import { Router, type Request, type Response } from 'express';
+import type { CoreRouter } from '../router';
 
-export function createD2DMsgRouter(): Router {
-  const router = Router();
-
-  // POST /v1/msg/send — stub
-  router.post('/v1/msg/send', (_req: Request, res: Response) => {
-    res.status(501).json({
-      error: 'D2D send not yet implemented',
-      phase: 6,
-      message: 'D2D messaging via NaCl sealed box will be available in Phase 6',
-    });
-  });
-
-  // GET /v1/msg/inbox — stub
-  router.get('/v1/msg/inbox', (_req: Request, res: Response) => {
-    res.status(501).json({
-      error: 'D2D inbox not yet implemented',
-      phase: 6,
-      message: 'D2D inbox with quarantine will be available in Phase 6',
-    });
-  });
-
-  return router;
+export function registerD2DMsgRoutes(router: CoreRouter): void {
+  router.post('/v1/msg/send', async () => ({
+    status: 501,
+    body: {
+      error: 'D2D send not yet wired to sendD2D',
+      note: 'Responder Bridge + MsgBox are the production path; this stub remains pending a direct /v1/msg/send passthrough.',
+    },
+  }));
 }

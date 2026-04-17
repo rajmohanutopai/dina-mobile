@@ -2269,3 +2269,82 @@ Mobile Dina and server Dina MUST be interoperable:
    API endpoints and Ed25519 auth inside the NaCl envelope. When targeting a
    `DinaDirectHTTPS` server, dina-cli works unchanged.
 6. **Trust network.** Same attestation format, same PDS, same AppView queries.
+
+---
+
+## 20. Bus Driver Scenario (Public Service Query Flow)
+
+End-to-end sequence for a user ("requester") asking a public service ("provider") a capability question — e.g. `"/service eta_query when will bus 42 arrive?"`:
+
+```
+Requester Brain                   AppView                    Provider Brain + Core
+───────────────                   ───────                    ─────────────────────
+handleChat("/service eta …")
+  │
+  ▼
+ServiceQueryOrchestratorWS2.issueQuery
+  │ searchServices(capability=eta_query, geo?) ─────▶
+  │                                                    returns ServiceProfile[]
+  │                                                    with capabilitySchemas + schemaHash
+  ◀── pickTopCandidate (ranked by distance + trust)
+  │
+  │ coreClient.sendServiceQuery({toDID, capability, params, queryId, ttl, schemaHash}) ────▶
+  │                                         Core creates kind=service_query workflow_task
+  │                                         + sends D2D service.query
+  ◀── {taskId, queryId, deduped}
+  (returns immediately — no waiting)
+
+                            [network — D2D service.query] ──────▶ receive_pipeline
+                                                                       │
+                                                                       ▼
+                                                              ServiceHandlerWS2.handleQuery
+                                                                 ├─ schema_hash check
+                                                                 ├─ params validate
+                                                                 │
+                                                                 ▼ (auto policy)
+                                                              createWorkflowTask(kind=delegation,
+                                                                                 payload=service_query_execution,
+                                                                                 correlationId=queryId)
+                                                                 │
+                                                                 ▼ (review policy)
+                                                              createWorkflowTask(kind=approval,
+                                                                                 initialState=pending_approval)
+                                                                 │ + notify operator
+                                                                 ▼
+                                                              Operator: /service_approve <taskId>
+                                                                 │
+                                                                 ▼
+                                                              executeAndRespond → spawns delegation
+
+                                                                 ▼ (delegation completes)
+                                                              WorkflowService.complete
+                                                                 │
+                                                                 ▼
+                                                              bridgeServiceQueryCompletion (Response Bridge)
+                                                                 │ extracts query_id + capability + result
+                                                                 ▼
+                                                              send D2D service.response ────────────▶
+
+receive_pipeline (service.response)
+  │
+  ▼
+completeMatchingServiceQueryTask   (findServiceQueryTask by queryId+peerDID+capability)
+  │
+  ▼
+emits workflow_event(kind=service_query, needs_delivery=true, details={response_status, capability, result})
+  │
+  ▼
+Guardian consumer (BRAIN-P2-W03, pending)
+  │
+  ▼
+formatServiceQueryResult(details) ─▶ chat UI renders "Bus 42 — 45 min to Market & Powell\nhttps://maps…"
+```
+
+Key durability points:
+- Requester's idempotency: `computeIdempotencyKey(to_did, capability, canonicalJSON(params))` on `POST /v1/service/query` — retries return the same taskId.
+- Provider's race safety: `findServiceQueryTask` filter includes both `created` and `running` so a fast inbound response lands correctly even mid-transition.
+- Schema-version pin: `schema_hash` is request-time-snapshotted into the delegation payload, so mid-execution config republishes don't shift the provider's validation target.
+- Approval idempotency: `executeAndRespond` uses deterministic child id `svc-exec-from-<approvalId>` and swallows `WorkflowConflictError{code:'duplicate_id'}` — Guardian retries are safe.
+
+For the per-kind workflow task lifecycles see `DINA_WORKFLOW_CONTROL_PLANE.md` Appendix B.
+For the delegation payload envelope see `DINA_DELEGATION_CONTRACT.md` Appendix A.

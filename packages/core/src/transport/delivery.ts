@@ -195,7 +195,8 @@ export async function deliverMessage(
       const response = await fetchFn(forwardURL, {
         method: 'POST',
         headers: reqHeaders,
-        body: payload,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        body: payload as any,
       });
 
       if (!response.ok) {
@@ -217,7 +218,8 @@ export async function deliverMessage(
     const response = await fetchFn(msgURL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: payload,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      body: payload as any,
     });
 
     if (!response.ok) {

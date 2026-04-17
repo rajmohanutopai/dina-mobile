@@ -9,10 +9,11 @@ import {
 
 describe('D2D Message Families', () => {
   describe('V1 type validation', () => {
-    it('accepts all 7 V1 types', () => {
+    it('accepts all 9 V1 types', () => {
       const v1Types = [
         'presence.signal', 'coordination.request', 'coordination.response',
         'social.update', 'safety.alert', 'trust.vouch.request', 'trust.vouch.response',
+        'service.query', 'service.response',
       ];
       for (const t of v1Types) {
         expect(isValidV1Type(t)).toBe(true);
@@ -53,6 +54,14 @@ describe('D2D Message Families', () => {
 
     it('maps trust.vouch.response → trust', () => {
       expect(msgTypeToScenario('trust.vouch.response')).toBe('trust');
+    });
+
+    it('maps service.query → service', () => {
+      expect(msgTypeToScenario('service.query')).toBe('service');
+    });
+
+    it('maps service.response → service', () => {
+      expect(msgTypeToScenario('service.response')).toBe('service');
     });
 
     it('returns empty string for unknown types', () => {
