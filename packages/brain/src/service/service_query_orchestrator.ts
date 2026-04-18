@@ -30,7 +30,7 @@ import {
   type Location,
   type RankOptions,
 } from './candidate_ranker';
-import { getTTL } from './capabilities/registry';
+import { getCapability, getTTL, computeSchemaHash } from './capabilities/registry';
 
 /** Minimal subset of `BrainCoreClient` the orchestrator needs. */
 export type OrchestratorCoreClient = Pick<BrainCoreClient, 'sendServiceQuery'>;
@@ -111,12 +111,57 @@ export class ServiceOrchestratorError extends Error {
     readonly code:
       | 'capability_required'
       | 'params_required'
+      | 'params_invalid'
       | 'to_did_required'
       | 'no_candidate'
       | 'send_failed',
   ) {
     super(message);
     this.name = 'ServiceOrchestratorError';
+  }
+}
+
+/**
+ * Sender-side params validation (main-dina 9b1c4a47, refined for
+ * review #2).
+ *
+ * Gating rules (applied in order):
+ *
+ *   1. Unknown capability → skip. Matches Go's "validate when schema
+ *      is present"; an older app build shouldn't block a capability
+ *      the device doesn't know about.
+ *
+ *   2. Provider published a `schema_hash` that DOESN'T match our
+ *      local one → skip. The provider is on a different schema
+ *      version; running their query through our stale validator
+ *      would reject payloads they would legitimately accept.
+ *      Defer to the provider (which validates server-side anyway).
+ *
+ *   3. Hashes match (or provider didn't advertise a hash at all)
+ *      → run our local validator. This is the happy path — a quick
+ *      sender-side guard so mis-shaped tool calls never leave the
+ *      device.
+ */
+function validateParamsSenderSide(
+  capability: string,
+  params: unknown,
+  providerSchemaHash: string | undefined,
+): void {
+  const cap = getCapability(capability);
+  if (cap === undefined) return;
+  if (providerSchemaHash !== undefined && providerSchemaHash !== '') {
+    const ours = computeSchemaHash(cap.paramsSchema);
+    if (ours !== providerSchemaHash) {
+      // Version mismatch — defer to the provider's validator.
+      return;
+    }
+  }
+  const err = cap.validateParams(params);
+  if (err !== null) {
+    throw new ServiceOrchestratorError(
+      `params failed ${capability} schema: ${err}`,
+      'params_invalid',
+    );
   }
 }
 
@@ -190,6 +235,12 @@ export class ServiceQueryOrchestrator {
     const queryId = this.generateQueryId();
     const schemaHash = top.profile.capabilitySchemas?.[req.capability]?.schemaHash;
 
+    // Review #2: validate only AFTER we know the provider's schema
+    // hash. When the provider is on a different schema version,
+    // local validation would reject payloads the provider would
+    // accept — defer to them in that case.
+    validateParamsSenderSide(req.capability, req.params, schemaHash);
+
     let sendResult: SendServiceQueryResult;
     try {
       sendResult = await this.core.sendServiceQuery({
@@ -249,6 +300,18 @@ export class ServiceQueryOrchestrator {
         'to_did_required',
       );
     }
+    // Review #5: DO NOT use `req.schemaHash` to gate validation here.
+    // In `issueQuery` the schema_hash comes from the AppView profile
+    // (a trusted signal). Here the caller is the LLM `query_service`
+    // tool — the model can emit a bogus or hallucinated hash, and if
+    // we treated that as a "version mismatch" we'd silently disable
+    // the very guard this layer exists to provide. `req.schemaHash`
+    // is still forwarded on the wire so Core / the provider can do
+    // their own version check; we just don't let it turn off OUR
+    // validator. Pass `undefined` so the gate always uses the
+    // hashes-agree branch — i.e. validates when a local schema is
+    // registered.
+    validateParamsSenderSide(req.capability, req.params, undefined);
 
     const ttlSeconds = this.pickTtlRaw(req.ttlSeconds, req.capability);
     const queryId = this.generateQueryId();

@@ -378,7 +378,7 @@ describe('WorkflowService — Response Bridge (CORE-P3-I01/I02/T01)', () => {
     const service = new WorkflowService({
       repository: repo,
       nowMsFn: () => 1_700_000_000_000,
-      responseBridgeSender: (ctx) => { calls.push({ ...ctx }); },
+      responseBridgeSender: async (ctx) => { calls.push({ ...ctx }); },
     });
     return { repo, service, calls };
   }

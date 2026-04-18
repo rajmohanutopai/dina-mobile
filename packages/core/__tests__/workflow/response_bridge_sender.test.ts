@@ -181,23 +181,26 @@ describe('makeServiceResponseBridgeSender — error paths', () => {
     expect(calls[0].body.error).toMatch(/malformed_result:/);
   });
 
-  it('invokes onSendError when the transport rejects; never throws out of the bridge', async () => {
+  it('invokes onSendError AND re-throws when the transport rejects (durability contract)', async () => {
+    // Review (main-dina 4848a934): the bridge MUST throw on send
+    // failure so `WorkflowService.bridgeServiceQueryCompletion` can
+    // distinguish "delivered — clear the stash" from "failed — leave
+    // for retry." The observability hook still fires for telemetry.
     const errors: Array<{ ctx: ServiceQueryBridgeContext; err: Error }> = [];
     const bridge = makeServiceResponseBridgeSender({
       sendResponse: makeSender({ error: new Error('ECONNRESET') }),
       onSendError: (ctx, err) => errors.push({ ctx, err }),
     });
-    // Must NOT throw.
-    await expect(bridge(SAMPLE_CTX)).resolves.toBeUndefined();
+    await expect(bridge(SAMPLE_CTX)).rejects.toThrow(/ECONNRESET/);
     expect(errors).toHaveLength(1);
     expect(errors[0].err.message).toBe('ECONNRESET');
   });
 
-  it('swallows send errors with no hook installed (no unhandled rejection)', async () => {
+  it('re-throws send errors even with no hook installed (durability contract)', async () => {
     const bridge = makeServiceResponseBridgeSender({
       sendResponse: makeSender({ error: new Error('silent failure') }),
     });
-    await expect(bridge(SAMPLE_CTX)).resolves.toBeUndefined();
+    await expect(bridge(SAMPLE_CTX)).rejects.toThrow(/silent failure/);
   });
 });
 

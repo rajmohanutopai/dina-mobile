@@ -91,14 +91,100 @@ export interface ServiceQueryBridgeContext {
  * synthesises a `service.response` D2D and hands it to Core's egress —
  * keeping Brain agnostic of the response wire format.
  *
- * Best-effort: errors are isolated so a faulty sender never rolls back
- * the completion. The completion has already landed when this fires.
+ * Contract: the sender MUST throw (or return a rejected promise) when
+ * the outbound send fails. The bridge relies on this to distinguish
+ * "delivered — clear the durable stash" from "failed — leave for
+ * sweeper retry" (main-dina 4848a934). Silently swallowing errors
+ * breaks durability.
+ *
+ * The completion has already landed when this fires — the sender is
+ * called post-completion, so its failure can't roll back the task
+ * state.
  *
  * Source: BUS_DRIVER_IMPLEMENTATION.md CORE-P3-I01 / I02.
  */
 export type ResponseBridgeSender = (
   ctx: ServiceQueryBridgeContext,
-) => Promise<void> | void;
+) => Promise<void>;
+
+/**
+ * Prefix marking `internal_stash` entries that hold a pending bridge
+ * send waiting to be retried. Format:
+ *   `bridge_pending:<JSON-encoded ServiceQueryBridgeContext>`
+ */
+const BRIDGE_PENDING_PREFIX = 'bridge_pending:';
+
+/**
+ * Hard timeout for a single bridge-send attempt. Without this a
+ * transport promise that never settles would pin the task in
+ * `bridgeInFlight` indefinitely, blocking every subsequent retry
+ * (review #1). On timeout the claim is released and the stash is
+ * left for the sweeper's next tick.
+ */
+const BRIDGE_SEND_TIMEOUT_MS = 30_000;
+
+/**
+ * Max retries for the post-send `setInternalStash(null)` clear. If
+ * the clear keeps failing we eventually give up and push the taskId
+ * into `bridgeDeliveredAwaitingClear` so the retry sweeper skips it
+ * even though the durable state still shows `bridge_pending:`
+ * (review #3).
+ */
+const STASH_CLEAR_MAX_ATTEMPTS = 3;
+
+/**
+ * Generic timeout wrapper — resolves with the task's value or
+ * rejects with a timeout Error. The returned promise is backed by
+ * the same `Promise.race` idiom used elsewhere in Core.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error(`${label}: timeout after ${ms}ms`));
+    }, ms);
+    p.then(
+      (v) => { if (done) return; done = true; clearTimeout(timer); resolve(v); },
+      (e) => { if (done) return; done = true; clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+function serialiseBridgeCtx(ctx: ServiceQueryBridgeContext): string {
+  // JSON.stringify yields stable keys on a plain object literal;
+  // recovery reads the exact shape back.
+  return JSON.stringify(ctx);
+}
+
+function deserialiseBridgeCtx(raw: string): ServiceQueryBridgeContext | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<ServiceQueryBridgeContext>;
+    if (
+      typeof parsed.taskId !== 'string' ||
+      typeof parsed.fromDID !== 'string' ||
+      typeof parsed.queryId !== 'string' ||
+      typeof parsed.capability !== 'string' ||
+      typeof parsed.ttlSeconds !== 'number' ||
+      typeof parsed.resultJSON !== 'string' ||
+      typeof parsed.serviceName !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      taskId: parsed.taskId,
+      fromDID: parsed.fromDID,
+      queryId: parsed.queryId,
+      capability: parsed.capability,
+      ttlSeconds: parsed.ttlSeconds,
+      resultJSON: parsed.resultJSON,
+      serviceName: parsed.serviceName,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** `getWorkflowService` returns null when no repo is wired. */
 export interface WorkflowServiceOptions {
@@ -135,6 +221,42 @@ export class WorkflowService {
   private readonly repo: WorkflowRepository;
   private readonly nowMsFn: () => number;
   private readonly responseBridgeSender: ResponseBridgeSender | null;
+  /**
+   * Task IDs whose bridge-send is currently in flight — either the
+   * detached initial send fired by `bridgeServiceQueryCompletion`, or
+   * an active retry from `retryPendingBridges`. Used to skip a stash
+   * that is actively being sent so a slow first attempt can't get
+   * resend in parallel by the sweeper (review #1). Cleared when the
+   * send resolves (success or failure).
+   */
+  private readonly bridgeInFlight = new Set<string>();
+  /**
+   * Detached promises kicked off by `bridgeServiceQueryCompletion` —
+   * stored so `flushBridgeInFlight()` (and the test `drainOnce()`)
+   * can wait for them to settle deterministically.
+   */
+  private readonly bridgeDetached = new Set<Promise<unknown>>();
+  /**
+   * Task IDs whose send DID deliver but whose stash-clear failed. On
+   * the next tick the bridge retry skips these — re-sending a
+   * delivered response would produce a duplicate envelope at the
+   * requester. Cleared only when a subsequent clear lands (review
+   * #3).
+   */
+  private readonly bridgeDeliveredAwaitingClear = new Set<string>();
+  /**
+   * In-memory fallback for tasks whose INITIAL `setInternalStash`
+   * write threw. Without this, an initial-stash failure followed by
+   * a send failure would lose the retry record entirely (review #4).
+   * The retry sweeper walks this map alongside the durable stash.
+   */
+  private readonly bridgeInMemoryFallback = new Map<string, ServiceQueryBridgeContext>();
+  /**
+   * Active `retryPendingBridges` call — `null` when idle. The sweeper
+   * tests for this before starting a tick so two overlapping ticks
+   * can't race the same batch of stashes (review #1).
+   */
+  private retryInFlight: Promise<number> | null = null;
 
   constructor(options: WorkflowServiceOptions) {
     if (!options.repository) {
@@ -289,8 +411,18 @@ export class WorkflowService {
    * Fire the Response Bridge if the completed task is a service-query
    * delegation. No-op when the bridge isn't wired, the task isn't a
    * delegation, or the payload isn't JSON / lacks the expected type.
-   * Best-effort: errors are isolated so the completion caller isn't
-   * rolled back by a faulty sender.
+   *
+   * Durability (main-dina 4848a934): stash `bridge_pending:<ctx-json>`
+   * in the task's `internal_stash` BEFORE calling the sender, clear
+   * it on success. A send failure leaves the stash in place so the
+   * `BridgePendingSweeper` can retry on a later tick — otherwise a
+   * transient D2D failure leaves the requester hanging until TTL
+   * expires with no signal.
+   *
+   * Best-effort: the caller of `complete()` / `fail()` is not blocked
+   * on the bridge. The send is launched on a detached promise; the
+   * sync stash write happens first so a process crash in the middle
+   * still leaves a retryable record.
    */
   private bridgeServiceQueryCompletion(task: WorkflowTask, resultJSON: string): void {
     const send = this.responseBridgeSender;
@@ -312,22 +444,218 @@ export class WorkflowService {
         ? payload.ttl_seconds
         : 60;
     const serviceName = typeof payload.service_name === 'string' ? payload.service_name : '';
+
+    const ctx: ServiceQueryBridgeContext = {
+      taskId: task.id,
+      fromDID,
+      queryId,
+      capability,
+      ttlSeconds,
+      resultJSON,
+      serviceName,
+    };
+
+    // Durable stash BEFORE send. The prefix `bridge_pending:` lets
+    // the retry sweeper find this entry via `listTasksWithStashPrefix`.
+    //
+    // Review #4: if the initial stash write fails, fall back to an
+    // in-memory queue so we don't lose the retry record if the send
+    // then also fails. `retryPendingBridges` walks both surfaces.
+    let stashWritten = false;
     try {
-      const ret = send({
-        taskId: task.id,
-        fromDID,
-        queryId,
-        capability,
-        ttlSeconds,
-        resultJSON,
-        serviceName,
-      });
-      if (ret instanceof Promise) {
-        ret.catch(() => { /* swallow — bridge failures are non-fatal */ });
-      }
+      this.repo.setInternalStash(
+        task.id,
+        BRIDGE_PENDING_PREFIX + serialiseBridgeCtx(ctx),
+        this.nowMsFn(),
+      );
+      stashWritten = true;
     } catch {
-      // Non-fatal — completion has already landed.
+      this.bridgeInMemoryFallback.set(task.id, ctx);
     }
+
+    // Claim in-flight BEFORE firing the detached send (review #1).
+    // `retryPendingBridges` checks `bridgeInFlight` and skips any
+    // task currently being sent — prevents double-dispatch.
+    this.bridgeInFlight.add(task.id);
+
+    // Track the detached promise so `flushBridgeInFlight()` can wait
+    // for it deterministically. The set removal happens INSIDE the
+    // IIFE's `finally` so any code awaiting `flush` sees an empty
+    // `bridgeDetached` set by the time its `Promise.allSettled`
+    // continuation runs (a trailing `.finally(...)` chain would fire
+    // in a separate microtask and race the flush loop).
+    const detachedContainer: { promise: Promise<void> | null } = { promise: null };
+    const detached = (async () => {
+      try {
+        // Review #1: bound the send by a hard timeout so a transport
+        // promise that never settles can't pin the in-flight claim
+        // forever. On timeout the claim is released (in `finally`)
+        // and the stash / fallback is left for the sweeper.
+        await withTimeout(send(ctx), BRIDGE_SEND_TIMEOUT_MS, 'bridge.send');
+        // Delivered — clear the durable record(s) with bounded retries
+        // so a transient SQLite write error doesn't produce a
+        // duplicate send on the next tick (review #3).
+        await this.clearBridgeRecord(task.id, stashWritten);
+      } catch {
+        // Timeout OR transport failure — leave stash/fallback in
+        // place. The sweeper will retry on a later tick.
+      } finally {
+        this.bridgeInFlight.delete(task.id);
+        if (detachedContainer.promise !== null) {
+          this.bridgeDetached.delete(detachedContainer.promise);
+        }
+      }
+    })();
+    detachedContainer.promise = detached;
+    this.bridgeDetached.add(detached);
+    void detached;
+  }
+
+  /**
+   * Clear the durable stash (or in-memory fallback) for a task whose
+   * bridge-send succeeded. Retries up to `STASH_CLEAR_MAX_ATTEMPTS`
+   * times on SQLite write error; if all retries fail the taskId is
+   * parked in `bridgeDeliveredAwaitingClear` so `retryPendingBridges`
+   * knows not to re-dispatch it (review #3). The flag is cleared
+   * only when a subsequent clear succeeds.
+   */
+  private async clearBridgeRecord(taskId: string, stashWritten: boolean): Promise<void> {
+    // In-memory fallback first — always succeeds.
+    this.bridgeInMemoryFallback.delete(taskId);
+    if (!stashWritten) {
+      this.bridgeDeliveredAwaitingClear.delete(taskId);
+      return;
+    }
+    for (let attempt = 0; attempt < STASH_CLEAR_MAX_ATTEMPTS; attempt++) {
+      try {
+        this.repo.setInternalStash(taskId, null, this.nowMsFn());
+        this.bridgeDeliveredAwaitingClear.delete(taskId);
+        return;
+      } catch {
+        // Back off slightly before retrying. The repo is likely
+        // sync (SQLite via op-sqlite) so a short wait is enough for
+        // a mutex contention to clear.
+        await new Promise<void>((r) => setTimeout(r, 5 * (attempt + 1)));
+      }
+    }
+    // Out of attempts — record that we delivered but couldn't clear.
+    // The retry sweeper checks this set and skips the task so we
+    // don't duplicate the send.
+    this.bridgeDeliveredAwaitingClear.add(taskId);
+  }
+
+  /**
+   * Wait for every detached initial-send promise to settle. Used by
+   * `drainOnce()` to ensure "complete then retry" ordering is
+   * deterministic: without flushing, a caller could see a stash
+   * still present right after `drainOnce` resolved even though the
+   * send had just delivered (review #7).
+   */
+  async flushBridgeInFlight(): Promise<void> {
+    while (this.bridgeDetached.size > 0) {
+      // Snapshot — new promises added concurrently are picked up on
+      // the next loop iteration.
+      const pending = Array.from(this.bridgeDetached);
+      await Promise.allSettled(pending);
+    }
+  }
+
+  /**
+   * Retry every task with a `bridge_pending:` internal_stash entry —
+   * called by `BridgePendingSweeper`. Returns the number of stashes
+   * that were successfully cleared this tick (i.e. resends that
+   * delivered). Best-effort: per-task errors are swallowed so one
+   * stuck entry can't block the rest of the batch.
+   *
+   * Concurrency (review #1):
+   *   - Coalesces overlapping calls via `retryInFlight`. A sweeper
+   *     tick arriving while the previous tick is still awaiting sends
+   *     returns the same promise instead of racing on the same
+   *     stashes.
+   *   - Skips tasks whose bridge send is already in flight (either
+   *     the detached initial send OR a claim we took earlier in this
+   *     tick). Without this, a slow first send would be picked up as
+   *     pending and resent in parallel → two identical
+   *     `service.response` envelopes for one completion.
+   */
+  retryPendingBridges(limit = 50): Promise<number> {
+    if (this.retryInFlight !== null) return this.retryInFlight;
+    const send = this.responseBridgeSender;
+    if (send === null) return Promise.resolve(0);
+    const promise = (async () => {
+      let cleared = 0;
+      // --- Durable stashes first ---
+      const tasks = this.repo.listTasksWithStashPrefix(BRIDGE_PENDING_PREFIX, limit);
+        for (const task of tasks) {
+          // Skip anything currently being sent (detached initial send
+          // or an earlier retry from this tick) — review #1.
+          if (this.bridgeInFlight.has(task.id)) continue;
+          // Skip tasks that already delivered but whose stash-clear
+          // hasn't landed yet — re-sending would duplicate the
+          // envelope (review #3). Opportunistically try the clear
+          // again here; on success the marker is dropped and the
+          // stash is gone, so the next tick won't see it at all.
+          if (this.bridgeDeliveredAwaitingClear.has(task.id)) {
+            try {
+              this.repo.setInternalStash(task.id, null, this.nowMsFn());
+              this.bridgeDeliveredAwaitingClear.delete(task.id);
+            } catch { /* leave for the next tick */ }
+            continue;
+          }
+          const stash = task.internal_stash;
+          if (typeof stash !== 'string' || !stash.startsWith(BRIDGE_PENDING_PREFIX)) continue;
+          const ctx = deserialiseBridgeCtx(stash.slice(BRIDGE_PENDING_PREFIX.length));
+          if (ctx === null) {
+            // Corrupt stash — clear so we don't retry it forever.
+            try { this.repo.setInternalStash(task.id, null, this.nowMsFn()); } catch { /* ignore */ }
+            continue;
+          }
+          this.bridgeInFlight.add(task.id);
+          try {
+            await withTimeout(send(ctx), BRIDGE_SEND_TIMEOUT_MS, 'bridge.send');
+            await this.clearBridgeRecord(task.id, true);
+            cleared++;
+          } catch {
+            /* send still failing — leave stash for the next tick */
+          } finally {
+            this.bridgeInFlight.delete(task.id);
+          }
+        }
+        // --- In-memory fallback queue (review #4) ---
+        // Tasks whose initial durable stash failed to write. Process
+        // under the same in-flight / awaiting-clear gates.
+        const fallback = Array.from(this.bridgeInMemoryFallback.entries()).slice(0, limit);
+        for (const [taskId, ctx] of fallback) {
+          if (this.bridgeInFlight.has(taskId)) continue;
+          if (this.bridgeDeliveredAwaitingClear.has(taskId)) continue;
+          this.bridgeInFlight.add(taskId);
+          try {
+            await withTimeout(send(ctx), BRIDGE_SEND_TIMEOUT_MS, 'bridge.send');
+            // Success — drop the in-memory entry and attempt a
+            // durable clear (might be a no-op; might finally succeed
+            // now that whatever was blocking SQLite is back).
+            await this.clearBridgeRecord(taskId, false);
+            cleared++;
+          } catch {
+            /* leave in fallback for the next tick */
+          } finally {
+            this.bridgeInFlight.delete(taskId);
+          }
+        }
+      return cleared;
+    })();
+    // Identity-checked cleanup: if another caller arrived after us
+    // and installed its own promise, don't clobber theirs. This also
+    // avoids a subtle ordering bug where a fully-synchronous
+    // opportunistic-clear tick (no awaits on the hot path) would
+    // complete its `finally` BEFORE the outer assignment below, and
+    // the outer assignment would then install a stale "in-flight"
+    // reference that pins subsequent callers out.
+    this.retryInFlight = promise;
+    promise.finally(() => {
+      if (this.retryInFlight === promise) this.retryInFlight = null;
+    });
+    return promise;
   }
 
   /** Mark a task as failed with a reason. */

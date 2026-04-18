@@ -128,6 +128,132 @@ describe('ServiceQueryOrchestrator.issueQuery — validation', () => {
       }),
     ).rejects.toThrow(/params is required/);
   });
+
+  it('rejects params that fail the capability\'s sender-side schema check (main-dina 9b1c4a47)', async () => {
+    // eta_query expects `{ location: { lat, lng } }`. An empty object
+    // should be rejected BEFORE we hit Core so a mis-shaped tool call
+    // doesn't consume a round-trip.
+    //
+    // Provider publishes NO schemaHash — that's the "hashes agree (or
+    // no hash)" branch where our local validator runs. A mismatched
+    // hash would skip validation instead (see next test).
+    const profile: ServiceProfile = {
+      ...BUS_SERVICE,
+      capabilitySchemas: undefined,
+    };
+    const coreSeen: CoreSend[] = [];
+    const orch = new ServiceQueryOrchestrator({
+      appViewClient: stubAppView([profile]),
+      coreClient: stubCore({ seen: coreSeen }),
+    });
+    await expect(
+      orch.issueQuery({ capability: 'eta_query', params: {} }),
+    ).rejects.toMatchObject({ code: 'params_invalid' });
+    // Crucially: no round-trip happened. The check is sender-side.
+    expect(coreSeen).toHaveLength(0);
+  });
+
+  it('skips sender-side validation when the provider advertises a different schema_hash (review #2)', async () => {
+    // The provider's published schema_hash doesn't match our local
+    // hash for eta_query → the provider is on a different schema
+    // version. Running our stale validator against their schema
+    // could reject payloads they'd legitimately accept, so defer to
+    // them. Verifies the query still dispatches even when params
+    // would fail OUR validator.
+    const otherVersion: ServiceProfile = {
+      ...BUS_SERVICE,
+      capabilitySchemas: {
+        eta_query: {
+          params: { type: 'object' },
+          result: { type: 'object' },
+          // Bogus hash that will not match our locally-computed hash.
+          schemaHash: 'hash-future-v99',
+        },
+      },
+    };
+    const coreSeen: CoreSend[] = [];
+    const orch = new ServiceQueryOrchestrator({
+      appViewClient: stubAppView([otherVersion]),
+      coreClient: stubCore({ seen: coreSeen }),
+    });
+    await orch.issueQuery({
+      capability: 'eta_query',
+      params: {}, // Would fail our validator if it ran.
+    });
+    expect(coreSeen).toHaveLength(1);
+    expect(coreSeen[0].schemaHash).toBe('hash-future-v99');
+  });
+
+  it('issueQueryToDID always validates locally regardless of caller-supplied schema_hash (review #5)', async () => {
+    // The `query_service` LLM tool forwards whatever schema_hash the
+    // model emits. Letting a bogus / hallucinated hash disable the
+    // local validator would defeat the guard. `issueQueryToDID`
+    // always runs the local check when a capability is registered —
+    // the hash still rides the wire for the provider's version
+    // check, but we do NOT trust it to gate our own validator.
+    const coreSeen: CoreSend[] = [];
+    const orch = new ServiceQueryOrchestrator({
+      appViewClient: stubAppView([BUS_SERVICE]),
+      coreClient: stubCore({ seen: coreSeen }),
+    });
+    // Bogus hash supplied → still rejected because we ignore the
+    // caller's hash for gating.
+    await expect(
+      orch.issueQueryToDID({
+        toDID: 'did:plc:bus42',
+        capability: 'eta_query',
+        params: {},
+        schemaHash: 'hash-future-v99',
+      }),
+    ).rejects.toMatchObject({ code: 'params_invalid' });
+    // And without a hash — same result.
+    await expect(
+      orch.issueQueryToDID({
+        toDID: 'did:plc:bus42',
+        capability: 'eta_query',
+        params: {},
+      }),
+    ).rejects.toMatchObject({ code: 'params_invalid' });
+    expect(coreSeen).toHaveLength(0);
+  });
+
+  it('issueQueryToDID forwards the caller-supplied schema_hash on the wire even though it does NOT gate validation', async () => {
+    const coreSeen: CoreSend[] = [];
+    const orch = new ServiceQueryOrchestrator({
+      appViewClient: stubAppView([BUS_SERVICE]),
+      coreClient: stubCore({ seen: coreSeen }),
+    });
+    await orch.issueQueryToDID({
+      toDID: 'did:plc:bus42',
+      capability: 'eta_query',
+      params: { location: { lat: 0, lng: 0 } }, // valid — passes our validator
+      schemaHash: 'hash-provider-v2',
+    });
+    expect(coreSeen).toHaveLength(1);
+    expect(coreSeen[0].schemaHash).toBe('hash-provider-v2');
+  });
+
+  it('skips validation for unregistered capabilities (deferred to provider)', async () => {
+    // When a capability has no local registry entry, the Go behaviour
+    // is "validate when schema is present" — skip the check and let
+    // the provider's validator handle it. Verifies we don't over-
+    // restrict: arbitrary capability names stay shippable.
+    const unknownCap: ServiceProfile = {
+      ...BUS_SERVICE,
+      capabilities: ['some_future_cap'],
+      capabilitySchemas: undefined,
+    };
+    const coreSeen: CoreSend[] = [];
+    const orch = new ServiceQueryOrchestrator({
+      appViewClient: stubAppView([unknownCap]),
+      coreClient: stubCore({ seen: coreSeen }),
+    });
+    await orch.issueQuery({
+      capability: 'some_future_cap',
+      params: { anything: true },
+    });
+    expect(coreSeen).toHaveLength(1);
+  });
 });
 
 describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
@@ -188,7 +314,7 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
     });
     await orch.issueQuery({
       capability: 'eta_query',
-      params: {},
+      params: { location: { lat: 37.77, lng: -122.41 } },
       viewer: { lat: 37.77, lng: -122.41 },
       radiusKm: 3,
       q: 'bus',
@@ -211,7 +337,7 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
     });
     const result = await orch.issueQuery({
       capability: 'eta_query',
-      params: {},
+      params: { location: { lat: 0, lng: 0 } },
     });
     expect(result.deduped).toBe(true);
     expect(result.taskId).toBe('sq-42');
@@ -227,7 +353,10 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
       appViewClient: stubAppView([plain]),
       coreClient: stubCore({ seen: coreSeen }),
     });
-    await orch.issueQuery({ capability: 'eta_query', params: {} });
+    await orch.issueQuery({
+      capability: 'eta_query',
+      params: { location: { lat: 0, lng: 0 } },
+    });
     expect(coreSeen[0].schemaHash).toBeUndefined();
   });
 
@@ -237,7 +366,10 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
       coreClient: stubCore(),
     });
     try {
-      await orch.issueQuery({ capability: 'eta_query', params: {} });
+      await orch.issueQuery({
+        capability: 'eta_query',
+        params: { location: { lat: 0, lng: 0 } },
+      });
       fail('expected no_candidate');
     } catch (err) {
       expect(err).toBeInstanceOf(ServiceOrchestratorError);
@@ -251,7 +383,10 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
       coreClient: stubCore({ sendError: new Error('network down') }),
     });
     try {
-      await orch.issueQuery({ capability: 'eta_query', params: {} });
+      await orch.issueQuery({
+        capability: 'eta_query',
+        params: { location: { lat: 0, lng: 0 } },
+      });
       fail('expected send_failed');
     } catch (err) {
       expect(err).toBeInstanceOf(ServiceOrchestratorError);
@@ -269,7 +404,10 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
       coreClient: stubCore(),
     });
     const result = await Promise.race([
-      orch.issueQuery({ capability: 'eta_query', params: {} }),
+      orch.issueQuery({
+        capability: 'eta_query',
+        params: { location: { lat: 0, lng: 0 } },
+      }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('hang')), 50)),
     ]);
     expect((result as { taskId: string }).taskId).toBe('sq-1');
@@ -285,7 +423,7 @@ describe('ServiceQueryOrchestrator.issueQuery — dispatch', () => {
     });
     const result = await orch.issueQuery({
       capability: 'eta_query',
-      params: {},
+      params: { location: { lat: 0, lng: 0 } },
     });
     expect(result.queryId).toBe('q-local');
   });

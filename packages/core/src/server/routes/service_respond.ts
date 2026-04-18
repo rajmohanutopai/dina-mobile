@@ -45,7 +45,6 @@ export function getServiceRespondSender(): ServiceRespondSender | null {
 
 const VALID_STATUSES: ReadonlySet<string> = new Set(['success', 'unavailable', 'error']);
 const CLAIM_EXTENSION_SEC = 60;
-const PROVIDER_WINDOW_TTL_SEC = 30;
 
 interface ServiceRespondRequest {
   task_id: string;
@@ -172,7 +171,30 @@ export function registerServiceRespondRoutes(
     }
 
     // 4. Open fresh provider window.
-    setProviderWindow(fromDID, queryId, capability, PROVIDER_WINDOW_TTL_SEC);
+    //
+    //    Use the REMAINING original wait window, not the
+    //    lease-extended `expires_at`. Review history:
+    //      - Main-dina 4848a934: stop hardcoding 30s; preserve
+    //        requester's ttl through the bridge.
+    //      - Later pass: using the full `ttl_seconds` verbatim was
+    //        wrong for review/approval flows — a task sitting queued
+    //        for 45s then handed a fresh 60s window authorises the
+    //        provider past the requester's T+60 expiry.
+    //      - This pass (review #2 of the follow-up): computing
+    //        remaining from `claimedTask.expires_at` is ALSO wrong
+    //        because `claimApprovalForExecution` already extended
+    //        that column by `CLAIM_EXTENSION_SEC=60` as part of the
+    //        claim. The authoritative deadline is the task's
+    //        creation time plus its original ttl.
+    //    Formula: `originalDeadlineSec = floor(created_at / 1000) +
+    //    ttlSeconds`; `remainingSec = max(1, originalDeadlineSec -
+    //    nowSec)`. Minimum 1s so a just-expired task still gets one
+    //    shot at the window (the D2D-level ttl check is elsewhere).
+    const nowSecNow = nowSecFn();
+    const originalDeadlineSec = Math.floor(claimedTask.created_at / 1000) + ttlSeconds;
+    const remainingSec = Math.max(1, originalDeadlineSec - nowSecNow);
+    const windowSec = Math.min(remainingSec, ttlSeconds);
+    setProviderWindow(fromDID, queryId, capability, windowSec);
 
     // 5. Build D2D body (task payload is authoritative for query_id etc.).
     const d2dBody: ServiceResponseBody = {

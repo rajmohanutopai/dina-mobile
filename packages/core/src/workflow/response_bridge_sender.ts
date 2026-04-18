@@ -67,8 +67,18 @@ export interface MakeResponseBridgeSenderOptions {
 
 /**
  * Factory — returns a `ResponseBridgeSender` ready to plug into
- * `WorkflowServiceOptions.responseBridgeSender`. The returned function
- * never throws: all error paths route through the optional hooks.
+ * `WorkflowServiceOptions.responseBridgeSender`.
+ *
+ * Throws/rejects on transport failure (review #8 / #4848a934
+ * durability contract): the caller — `WorkflowService.bridge
+ * ServiceQueryCompletion` — needs to distinguish a delivered send
+ * (clear the `bridge_pending:` stash) from a failed one (leave it
+ * for the retry sweeper). Silently swallowing errors would either
+ * leak the stash on a success OR lose the retry on a failure.
+ *
+ * The `onSendError` / `onMalformedResult` hooks still fire before
+ * the re-throw for observability / telemetry; they do NOT suppress
+ * the error.
  */
 export function makeServiceResponseBridgeSender(
   options: MakeResponseBridgeSenderOptions,
@@ -78,6 +88,9 @@ export function makeServiceResponseBridgeSender(
       'makeServiceResponseBridgeSender: sendResponse callback is required',
     );
   }
+  // Defaults to no-op observers. The returned sender DOES re-throw
+  // transport failures — see the factory docstring above for the
+  // durability rationale.
   const onSendError = options.onSendError ?? (() => { /* no-op */ });
   const onMalformedResult = options.onMalformedResult ?? (() => { /* no-op */ });
 
@@ -97,6 +110,16 @@ export function makeServiceResponseBridgeSender(
     // Issue #16: when the runner's output is unparseable, still emit an
     // error `service.response` to the requester so they stop waiting
     // for TTL. Previously this path silently dropped the response.
+    //
+    // Review (main-dina 4848a934): send failures here MUST throw, not
+    // just fire `onSendError`. The caller (`WorkflowService.bridge
+    // ServiceQueryCompletion`) distinguishes "delivered — clear the
+    // durable stash" from "failed — leave for sweeper retry" by
+    // whether this promise rejects. Silently swallowing a failure
+    // would leave the stash in place on a succeeded send (clobbering
+    // future retries) OR clear it on a failed send (losing the retry
+    // entirely), depending on the path. The hook fires for
+    // observability either way.
     if (parseError !== null) {
       const errorBody: ServiceResponseBody = {
         query_id: ctx.queryId,
@@ -108,7 +131,9 @@ export function makeServiceResponseBridgeSender(
       try {
         await options.sendResponse(ctx.fromDID, errorBody);
       } catch (e) {
-        onSendError(ctx, e instanceof Error ? e : new Error(String(e)));
+        const err = e instanceof Error ? e : new Error(String(e));
+        onSendError(ctx, err);
+        throw err;
       }
       return;
     }
@@ -122,7 +147,9 @@ export function makeServiceResponseBridgeSender(
     try {
       await options.sendResponse(ctx.fromDID, body);
     } catch (e) {
-      onSendError(ctx, e instanceof Error ? e : new Error(String(e)));
+      const err = e instanceof Error ? e : new Error(String(e));
+      onSendError(ctx, err);
+      throw err;
     }
   };
 }

@@ -62,6 +62,9 @@ import {
   LeaseExpirySweeper,
 } from '../../../core/src/workflow/lease_expiry_sweeper';
 import {
+  BridgePendingSweeper,
+} from '../../../core/src/workflow/bridge_pending_sweeper';
+import {
   LocalDelegationRunner,
   type LocalCapabilityRunner,
 } from '../../../core/src/workflow/local_delegation_runner';
@@ -292,6 +295,9 @@ export interface DinaNode {
     approvals: ApprovalReconciler;
     taskExpiry: TaskExpirySweeper;
     leaseExpiry: LeaseExpirySweeper;
+    /** Retries `bridge_pending` stashes that failed to send on first
+     *  attempt. Runs unconditionally — no-op when nothing is stashed. */
+    bridgeRetry: BridgePendingSweeper;
     /** Present only when `localDelegationRunner` was supplied. */
     localRunner: LocalDelegationRunner | null;
   };
@@ -516,6 +522,17 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
     clearInterval: options.clearInterval,
   });
 
+  // 5b1. BridgePendingSweeper — main-dina 4848a934 durability layer:
+  //      retries stashed `bridge_pending:` entries when the Response
+  //      Bridge's first send attempt failed. Without this, a transient
+  //      D2D hiccup on a completed delegation leaves the requester
+  //      hanging until TTL with no signal.
+  const bridgeRetry = new BridgePendingSweeper({
+    service: workflowService,
+    setInterval: options.setInterval,
+    clearInterval: options.clearInterval,
+  });
+
   // 5c. LocalDelegationRunner — opt-in in-process executor for demos /
   //     single-process tests. Production uses external dina-agent.
   //     Issue #5 / #6.
@@ -587,7 +604,7 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
     orchestrator,
     handler,
     dispatcher,
-    runners: { events, approvals, taskExpiry, leaseExpiry, localRunner },
+    runners: { events, approvals, taskExpiry, leaseExpiry, bridgeRetry, localRunner },
 
     async start(): Promise<void> {
       if (started) return;
@@ -713,6 +730,7 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
       approvals.start();
       taskExpiry.start();
       leaseExpiry.start();
+      bridgeRetry.start();
       if (localRunner !== null) localRunner.start();
 
       // Only flip the idempotency flag once every boot step has landed.
@@ -732,6 +750,7 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
       // runner ticks were still mid-flight, leading to reset-globals-
       // while-still-running races.
       if (localRunner !== null) localRunner.stop();
+      bridgeRetry.stop();
       leaseExpiry.stop();
       taskExpiry.stop();
       approvals.stop();
@@ -741,6 +760,7 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
         approvals.flush(),
         taskExpiry.flush(),
         leaseExpiry.flush(),
+        bridgeRetry.flush(),
         localRunner !== null ? localRunner.flush() : Promise.resolve(),
       ]);
       if (options.msgboxURL !== undefined) {
@@ -757,6 +777,21 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
     },
 
     async drainOnce(): Promise<void> {
+      // Two-phase drain (review #7):
+      //
+      //   Phase 1 — runners that can CREATE bridge_pending stashes:
+      //     * events/approvals/taskExpiry/leaseExpiry may fail
+      //       service-query tasks (→ bridge fires via fail())
+      //     * localRunner may complete delegation tasks (→ bridge
+      //       fires via complete())
+      //   Phase 2 — bridgeRetry picks up whatever those runners
+      //     stashed.
+      //
+      // Running them concurrently via a single `Promise.all` meant a
+      // stash created in phase 1 could easily land AFTER the bridge
+      // sweeper had already scanned for that tick, so one drainOnce
+      // didn't deterministically cover "complete then retry." The
+      // two-phase form makes the invariant hold.
       await Promise.all([
         events.runTick(),
         approvals.runTick(),
@@ -767,6 +802,16 @@ export async function createNode(options: CreateNodeOptions): Promise<DinaNode> 
         // sweep via drainOnce.
         localRunner !== null ? localRunner.runTick() : Promise.resolve(),
       ]);
+      // After phase 1 has fully settled, retry any bridge_pending
+      // stashes it produced. Await sequentially — not part of the
+      // same Promise.all.
+      await bridgeRetry.runTick();
+      // Also flush any detached initial-send promises the bridge
+      // kicked off during phase 1 so a successful clear-stash
+      // actually lands before drainOnce returns. Without this a
+      // caller asserting on stash state right after drainOnce could
+      // see the stash still present even though the send succeeded.
+      await workflowService.flushBridgeInFlight();
     },
 
     async dispose(): Promise<void> {

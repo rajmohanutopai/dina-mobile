@@ -244,6 +244,13 @@ export interface WorkflowRepository {
 
   // -- diagnostics / sweeper --
   listByKindAndState(kind: string, state: WorkflowTaskState, limit: number): WorkflowTask[];
+  /**
+   * List tasks whose `internal_stash` value starts with `prefix`. Used by
+   * the Response Bridge retry sweeper to find tasks with a pending
+   * bridge_pending entry that needs re-sending (main-dina 4848a934).
+   * Ordered by `updated_at` ASC so the oldest stuck entries retry first.
+   */
+  listTasksWithStashPrefix(prefix: string, limit: number): WorkflowTask[];
   size(): number;
 }
 
@@ -462,6 +469,21 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
        ORDER BY created_at ASC
        LIMIT ?`,
       [kind, state, limit],
+    );
+    return rows.map(rowToTask);
+  }
+
+  listTasksWithStashPrefix(prefix: string, limit: number): WorkflowTask[] {
+    // LIKE pattern — escape the SQL wildcards that might appear in the
+    // prefix. `prefix` is internal (always a literal like
+    // `bridge_pending:`) so the narrow character class is enough.
+    const like = prefix.replace(/[%_]/g, (c) => `\\${c}`) + '%';
+    const rows = this.db.query(
+      `SELECT ${TASK_COLUMNS} FROM workflow_tasks
+       WHERE internal_stash LIKE ? ESCAPE '\\'
+       ORDER BY updated_at ASC
+       LIMIT ?`,
+      [like, limit],
     );
     return rows.map(rowToTask);
   }
@@ -999,6 +1021,17 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       if (t.kind === kind && t.status === state) out.push({ ...t });
     }
     out.sort((a, b) => a.created_at - b.created_at);
+    return out.slice(0, limit);
+  }
+
+  listTasksWithStashPrefix(prefix: string, limit: number): WorkflowTask[] {
+    const out: WorkflowTask[] = [];
+    for (const t of this.tasks.values()) {
+      if (typeof t.internal_stash === 'string' && t.internal_stash.startsWith(prefix)) {
+        out.push({ ...t });
+      }
+    }
+    out.sort((a, b) => a.updated_at - b.updated_at);
     return out.slice(0, limit);
   }
 
