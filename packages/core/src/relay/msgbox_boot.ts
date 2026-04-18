@@ -32,6 +32,24 @@ export interface MsgBoxBootConfig {
   coreRouter: CoreRouter;
   /** Resolve sender info for D2D receive pipeline */
   resolveSender: (did: string) => Promise<{ keys: Uint8Array[]; trust: string }>;
+  /**
+   * Called when the receive pipeline bypasses the contact gate for a
+   * `service.query` / `service.response`. Brain's D2D dispatcher receives
+   * the parsed body here so the provider-side handler (or
+   * requester-side orchestrator for response traffic) runs. Without this
+   * wiring, inbound service.query traffic is validated and then silently
+   * discarded.
+   */
+  onBypassedD2D?: (info: {
+    senderDID: string;
+    messageType: string;
+    body: unknown;
+  }) => Promise<void> | void;
+  /**
+   * Timeout for the initial WS handshake. Forwarded to
+   * `connectToMsgBox`. Default 10s (matches `connectToMsgBox`).
+   */
+  readyTimeoutMs?: number;
 }
 
 /**
@@ -43,9 +61,34 @@ export async function bootstrapMsgBox(config: MsgBoxBootConfig): Promise<void> {
   setWSFactory(config.wsFactory);
 
   onD2DMessage((env) => {
-    handleInboundD2D(env, config.resolveSender).catch(() => {
-      /* handler errors logged inside handleInboundD2D */
-    });
+    handleInboundD2D(env, config.resolveSender)
+      .then(async (result) => {
+        // Contact-gate bypass for service.query / service.response: the
+        // receive pipeline validated + parsed the body but does not run
+        // provider-side logic itself. Hand off to the caller's dispatcher
+        // (Brain in production, a stub in tests).
+        if (
+          result.success &&
+          result.pipelineAction === 'bypassed' &&
+          result.bypassedBody !== undefined &&
+          result.messageType !== undefined &&
+          result.senderDID !== undefined &&
+          config.onBypassedD2D !== undefined
+        ) {
+          try {
+            await config.onBypassedD2D({
+              senderDID: result.senderDID,
+              messageType: result.messageType,
+              body: result.bypassedBody,
+            });
+          } catch {
+            // Dispatcher errors are caller-owned; we've done our job.
+          }
+        }
+      })
+      .catch(() => {
+        /* handler errors logged inside handleInboundD2D */
+      });
   });
 
   onRPCRequest((env) => {
@@ -63,7 +106,13 @@ export async function bootstrapMsgBox(config: MsgBoxBootConfig): Promise<void> {
 
   setWSDeliverFn(sendD2DViaWS);
 
-  await connectToMsgBox(config.msgboxURL);
+  // bootstrapMsgBox callers (createNode.start) need the WS to be
+  // genuinely ready before returning — a silent "connected" log while
+  // the handshake is still in flight was issue #7. Default to 10 s,
+  // overridable.
+  await connectToMsgBox(config.msgboxURL, {
+    readyTimeoutMs: config.readyTimeoutMs ?? 10_000,
+  });
 }
 
 /**

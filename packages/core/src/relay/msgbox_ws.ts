@@ -71,6 +71,14 @@ export function setWSFactory(factory: WSFactory | null): void {
 let ws: WSLike | null = null;
 let connected = false;
 let authenticated = false;
+/**
+ * True once we've responded to an `auth_challenge`. Some MsgBox variants
+ * skip the explicit `auth_success` frame and stream buffered envelopes
+ * immediately after the signed `auth_response`. Tracking this lets us
+ * implicitly promote to `authenticated` on the first envelope-shaped
+ * frame (issue #15).
+ */
+let authChallengeSeen = false;
 let currentURL: string | null = null;
 let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -147,7 +155,10 @@ export function signHandshake(nonce: string, timestamp: string, privateKey: Uint
  * 4. Starts read pump for envelope dispatch
  * 5. Auto-reconnects on disconnect
  */
-export async function connectToMsgBox(url: string): Promise<void> {
+export async function connectToMsgBox(
+  url: string,
+  options?: { readyTimeoutMs?: number },
+): Promise<void> {
   if (!wsFactory) {
     throw new Error('msgbox_ws: no WebSocket factory set — call setWSFactory() first');
   }
@@ -164,6 +175,50 @@ export async function connectToMsgBox(url: string): Promise<void> {
   currentURL = url;
   shouldReconnect = true;
   doConnect(url);
+
+  // Optionally await auth readiness so callers (bootstrap) can rely
+  // on the WS being usable when this resolves. The default is `0`
+  // (no wait) because `doConnect` is already kicked off asynchronously;
+  // wiring that cares about the handshake (e.g. `createNode.start()`)
+  // passes a real `readyTimeoutMs`. Previously this function returned
+  // immediately and callers logged "connected" before the auth_challenge
+  // had been answered — the first outbound envelope would silently fail
+  // `sendEnvelope` until auth completed. Issue #7.
+  const timeoutMs = options?.readyTimeoutMs ?? 0;
+  if (timeoutMs > 0) {
+    await waitForAuthenticated(timeoutMs);
+  }
+}
+
+/**
+ * Poll until `authenticated === true` or `timeoutMs` elapses. Resolves
+ * on authentication, rejects on timeout so the caller can surface a
+ * real error instead of logging a false "connected" message.
+ */
+function waitForAuthenticated(timeoutMs: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (authenticated) {
+      resolve();
+      return;
+    }
+    const deadline = Date.now() + timeoutMs;
+    const tick = (): void => {
+      if (authenticated) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(
+          new Error(
+            `msgbox_ws: handshake did not complete within ${timeoutMs}ms`,
+          ),
+        );
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
 }
 
 /** Check if connected to MsgBox. */
@@ -194,6 +249,7 @@ export async function disconnect(): Promise<void> {
   if (ws) { try { ws.close(); } catch { /* ok */ } ws = null; }
   connected = false;
   authenticated = false;
+  authChallengeSeen = false;
   currentURL = null;
   reconnectAttempt = 0;
 }
@@ -239,36 +295,31 @@ function doConnect(url: string): void {
   };
 
   ws.onmessage = (event) => {
-    try {
-      // Finding #8: Reject binary frames — MsgBox protocol is JSON-only
-      if (typeof event.data !== 'string') return;
-
-      const msg = JSON.parse(event.data);
-
-      // Auth challenge from server
-      if (msg.type === 'auth_challenge' && !authenticated) {
-        handleAuthChallenge(msg);
-        return;
-      }
-
-      // Auth success confirmation
-      if (msg.type === 'auth_success') {
-        authenticated = true;
-        return;
-      }
-
-      // Authenticated message dispatch
-      if (authenticated) {
-        dispatchEnvelope(msg as MsgBoxEnvelope);
-      }
-    } catch {
-      // Malformed message — ignore
+    // MsgBox speaks JSON over WS. Most frames are strings, but RN
+    // WebSocket polyfills surface binary frames as ArrayBuffer, a
+    // typed-array view, OR Blob depending on platform. Decode
+    // opportunistically; silently dropping binary frames (the old
+    // behaviour) meant replayed buffered envelopes after reconnect
+    // were lost (issues #15, #8).
+    const decoded = coerceToString(event.data);
+    if (decoded === null) return;
+    if (typeof decoded === 'string') {
+      handleFrameText(decoded);
+    } else {
+      // Blob path — async decode.
+      decoded.then(
+        (text) => {
+          if (text !== null) handleFrameText(text);
+        },
+        () => { /* blob read failed — drop */ },
+      );
     }
   };
 
   ws.onclose = () => {
     connected = false;
     authenticated = false;
+  authChallengeSeen = false;
     ws = null;
     if (shouldReconnect) scheduleReconnect();
   };
@@ -276,6 +327,30 @@ function doConnect(url: string): void {
   ws.onerror = () => {
     // Error triggers close, which triggers reconnect
   };
+}
+
+/** Parse + route a decoded JSON frame. Shared between string + Blob paths. */
+function handleFrameText(text: string): void {
+  let msg: { type?: string } & Record<string, unknown>;
+  try {
+    msg = JSON.parse(text) as { type?: string } & Record<string, unknown>;
+  } catch {
+    return;
+  }
+  if (msg.type === 'auth_challenge' && !authenticated) {
+    handleAuthChallenge(msg as unknown as { nonce: string; ts: number });
+    return;
+  }
+  if (msg.type === 'auth_success') {
+    authenticated = true;
+    return;
+  }
+  if (!authenticated && isEnvelopeLike(msg) && authChallengeSeen) {
+    authenticated = true;
+  }
+  if (authenticated) {
+    dispatchEnvelope(msg as unknown as MsgBoxEnvelope);
+  }
 }
 
 function handleAuthChallenge(challenge: { nonce: string; ts: number }): void {
@@ -291,8 +366,67 @@ function handleAuthChallenge(challenge: { nonce: string; ts: number }): void {
     pub: pubHex,
   }));
 
-  // Wait for server's auth_success message before marking authenticated.
-  // The onmessage handler checks for msg.type === 'auth_success'.
+  // Mark that we've replied to the challenge so the onmessage handler
+  // can accept either an explicit `auth_success` or a buffered-envelope
+  // burst as implicit auth completion (issue #15).
+  authChallengeSeen = true;
+}
+
+/**
+ * Coerce an incoming WS frame's payload to string. RN's WebSocket
+ * polyfill surfaces binary frames as ArrayBuffer, typed-array view, OR
+ * Blob depending on platform and `binaryType`. We decode UTF-8 when
+ * possible. Returns a promise-like result because Blob decoding is
+ * async; the caller awaits before parsing.
+ */
+function coerceToString(data: unknown): string | Promise<string | null> | null {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) {
+    try {
+      return new TextDecoder('utf-8').decode(new Uint8Array(data));
+    } catch {
+      return null;
+    }
+  }
+  if (ArrayBuffer.isView(data)) {
+    try {
+      const view = data as ArrayBufferView;
+      return new TextDecoder('utf-8').decode(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      );
+    } catch {
+      return null;
+    }
+  }
+  // RN WebSocket (and some browser impls with binaryType='blob') emits
+  // Blob frames. Blob.text() returns a Promise<string>; we propagate
+  // the promise so the caller's onmessage handler can await it.
+  // Guarded for platforms that don't define Blob.
+  const BlobCtor = (globalThis as unknown as { Blob?: unknown }).Blob;
+  if (
+    typeof BlobCtor === 'function' &&
+    data instanceof (BlobCtor as new () => unknown)
+  ) {
+    const blob = data as unknown as { text?: () => Promise<string> };
+    if (typeof blob.text === 'function') {
+      return blob.text().catch(() => null);
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Cheap shape check: does `msg` look like a routable envelope?
+ * Used to promote implicit authentication after a replied challenge.
+ */
+function isEnvelopeLike(msg: unknown): msg is MsgBoxEnvelope {
+  if (msg === null || typeof msg !== 'object') return false;
+  const m = msg as Record<string, unknown>;
+  return (
+    (m.type === 'd2d' || m.type === 'rpc' || m.type === 'cancel') &&
+    typeof m.id === 'string'
+  );
 }
 
 function dispatchEnvelope(env: MsgBoxEnvelope): void {

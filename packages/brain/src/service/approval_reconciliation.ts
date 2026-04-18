@@ -75,6 +75,12 @@ export class ApprovalReconciler {
   private readonly clearIntervalFn: NonNullable<ApprovalReconcilerOptions['clearInterval']>;
 
   private handle: unknown | null = null;
+  /**
+   * Monotonic tick counter — used only by the batchSize=1 path to
+   * alternate between `pending_approval` and `queued` sweeps so a
+   * single tick never exceeds the caller's budget (review #17).
+   */
+  private tickCount = 0;
   /** Promise for the in-flight tick, if any — used for deterministic `flush()`. */
   private tickInFlight: Promise<ReconciliationTickResult> | null = null;
 
@@ -166,13 +172,49 @@ export class ApprovalReconciler {
       failFailed: 0,
       errors: [],
     };
+    // Scan both `pending_approval` (operator never approved) AND
+    // `queued` (operator approved but delegation never ran). Split
+    // the per-tick batch budget evenly across the two list calls so
+    // a single tick still processes at most `batchSize` tasks total
+    // (issue #20 — previously each call used the full budget,
+    // doubling the per-tick work under load).
     let tasks: WorkflowTask[];
     try {
-      tasks = await this.core.listWorkflowTasks({
-        kind: 'approval',
-        state: 'pending_approval',
-        limit: this.batchSize,
-      });
+      // Review #17: split evenly but NEVER exceed the caller's
+      // per-tick budget. Previously `Math.max(1, ...)` on both halves
+      // meant batchSize=1 produced {half:1, remaining:1} = 2 tasks
+      // per tick — double the advertised budget. The fix: when
+      // batchSize=1 route the whole budget to one state per tick
+      // (alternating via `tickCount`) so the sum never overshoots.
+      let half: number;
+      let remaining: number;
+      if (this.batchSize <= 1) {
+        // Alternate between pending_approval and queued on each tick
+        // so both states get swept over time, but never more than
+        // one task per tick.
+        const which = this.tickCount % 2;
+        half = which === 0 ? 1 : 0;
+        remaining = which === 0 ? 0 : 1;
+      } else {
+        half = Math.floor(this.batchSize / 2);
+        remaining = this.batchSize - half;
+      }
+      this.tickCount++;
+      const pending = half > 0
+        ? await this.core.listWorkflowTasks({
+            kind: 'approval',
+            state: 'pending_approval',
+            limit: half,
+          })
+        : [];
+      const queued = remaining > 0
+        ? await this.core.listWorkflowTasks({
+            kind: 'approval',
+            state: 'queued',
+            limit: remaining,
+          })
+        : [];
+      tasks = [...pending, ...queued];
     } catch (err) {
       result.errors.push(err);
       this.onError(err);
@@ -198,9 +240,13 @@ export class ApprovalReconciler {
   }
 
   /**
-   * Per-task reconciliation: send `unavailable`, then fail. Failures at
-   * either step are isolated — we still try to fail the task after a send
-   * error so it doesn't stay in `pending_approval` forever.
+   * Per-task reconciliation: send `unavailable`. When the send
+   * succeeds, `/v1/service/respond` has already marked the task
+   * `completed` on our behalf — calling failWorkflowTask after that
+   * would be a double-terminate attempt on an already-terminal task
+   * (returns 409). We only fall through to `failWorkflowTask` when
+   * the send itself failed, so the task doesn't stay stuck in
+   * `pending_approval`/`queued` forever. Issue #13.
    */
   private async processOne(
     task: WorkflowTask,
@@ -213,6 +259,9 @@ export class ApprovalReconciler {
       });
       out.sent += 1;
       this.onExpired(task, 'sent');
+      // Success path: /v1/service/respond already completed the task.
+      // Do NOT call failWorkflowTask — it would 409.
+      return;
     } catch (err) {
       out.sendFailed += 1;
       out.errors.push(err);
@@ -220,6 +269,8 @@ export class ApprovalReconciler {
       this.onExpired(task, 'send_failed');
     }
 
+    // Send failed — fall back to an explicit fail so the task
+    // doesn't sit stuck. Best-effort; isolate any error from fail too.
     try {
       await this.core.failWorkflowTask(task.id, 'approval_expired');
     } catch (err) {

@@ -207,6 +207,15 @@ export function validateServiceConfig(value: unknown): asserts value is ServiceC
     throw new Error('service_config: capabilities must be an object');
   }
   const caps = v.capabilities as Record<string, unknown>;
+  // Review #19: a public profile with zero capabilities is a hostile
+  // advertisement — it tells AppView "I'm here" but any requester
+  // searching for a capability will bounce off. Block it at validation
+  // time so the screen's Save button can't put it there.
+  if (v.isPublic === true && Object.keys(caps).length === 0) {
+    throw new Error(
+      'service_config: a public profile must advertise at least one capability (add capabilities or set isPublic to false)',
+    );
+  }
   for (const [name, entryU] of Object.entries(caps)) {
     if (!name) {
       throw new Error('service_config: capability name cannot be empty');

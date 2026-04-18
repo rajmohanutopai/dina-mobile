@@ -54,8 +54,31 @@ export * from './pipeline/safety';
 export * from './person/linking';
 export * from './nudge/whisper';
 export * from './guardian/action_risk';
-export * from './guardian/density';
-export * from './guardian/anti_her_classify';
+// density exports `classifyTier` which collides with trust/tier_classifier
+// — re-export explicitly so the unrelated function stays reachable as
+// `densityClassifyTier` without clobbering the trust one.
+export {
+  analyzeDensity,
+  computeEntityDensity,
+  classifyTier as densityClassifyTier,
+  buildDisclosure,
+  applyDisclosure,
+} from './guardian/density';
+export type { DensityTier, EntityDensity, DensityAnalysis } from './guardian/density';
+// anti_her_classify exports `classifyDeterministic` which collides with
+// guardian/silence. Re-export the anti-her one under its own name.
+export {
+  registerAntiHerClassifier,
+  resetAntiHerClassifier,
+  preScreenMessage,
+  classifyDeterministic as classifyAntiHerDeterministic,
+  parseLLMResponse as parseAntiHerLLMResponse,
+} from './guardian/anti_her_classify';
+export type {
+  AntiHerCategory,
+  PreScreenResult,
+  AntiHerLLMCallFn,
+} from './guardian/anti_her_classify';
 export * from './guardian/guard_scan';
 export { CircuitBreaker, CircuitBreakerOpenError } from './core_client/circuit_breaker';
 export * from './routing/classify_factory';
@@ -63,11 +86,33 @@ export * from './routing/gemini_classify';
 export * from './routing/persona_selector';
 export * from './enrichment/sponsored';
 export * from './enrichment/sweep';
-export * from './enrichment/pipeline';
+// enrichment/pipeline exports `enrichItem` which collides with
+// staging/processor's `enrichItem`. Re-export the pipeline one under a
+// disambiguated name.
+export {
+  registerEnrichmentLLM,
+  resetEnrichmentPipeline,
+  enrichItem as enrichItemViaPipeline,
+} from './enrichment/pipeline';
+export type { LLMCallFn, EnrichmentResult } from './enrichment/pipeline';
 export * from './pipeline/chat_reasoning';
 export * from './pipeline/reasoning_trace';
 export * from './pipeline/reminder_planner';
-export * from './pipeline/identity_extraction';
+// identity_extraction exports `parseLLMResponse` which collides with
+// guardian/anti_her_classify's. Re-export under a disambiguated name.
+export {
+  registerIdentityExtractor,
+  resetIdentityExtractor,
+  extractIdentityLinks,
+  extractDeterministic,
+  parseLLMResponse as parseIdentityLLMResponse,
+} from './pipeline/identity_extraction';
+export type {
+  RelationshipType,
+  IdentityLink,
+  IdentityExtractionResult,
+  IdentityLLMCallFn,
+} from './pipeline/identity_extraction';
 export * from './pipeline/post_publish';
 export * from './briefing/assembly';
 export * from './briefing/providers';

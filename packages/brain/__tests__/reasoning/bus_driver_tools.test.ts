@@ -159,17 +159,17 @@ describe('createSearchPublicServicesTool', () => {
 });
 
 describe('createQueryServiceTool', () => {
-  it('calls orchestrator.issueQuery and returns task_id + status=pending', async () => {
-    const calls: unknown[] = [];
+  it('calls orchestrator.issueQueryToDID with the exact operator_did + schema_hash (issue #7/#8)', async () => {
+    const calls: Array<Record<string, unknown>> = [];
     const tool = createQueryServiceTool({
       orchestrator: {
-        async issueQuery(req) {
-          calls.push(req);
+        async issueQueryToDID(req) {
+          calls.push(req as unknown as Record<string, unknown>);
           return {
             queryId: 'q-1',
             taskId: 'svc-q-1',
-            toDID: 'did:plc:busdriver',
-            serviceName: 'Bus 42',
+            toDID: req.toDID,
+            serviceName: req.serviceName ?? req.toDID,
             deduped: false,
           };
         },
@@ -186,21 +186,26 @@ describe('createQueryServiceTool', () => {
       task_id: 'svc-q-1',
       query_id: 'q-1',
       to_did: 'did:plc:busdriver',
-      service_name: 'Bus 42',
       deduped: false,
       status: 'pending',
     });
+    // The tool MUST forward the LLM's chosen DID + schema_hash verbatim
+    // — this is the whole point of the refactor.
     expect(calls[0]).toMatchObject({
+      toDID: 'did:plc:busdriver',
       capability: 'eta_query',
       params: { route: '42' },
       ttlSeconds: 60,
+      schemaHash: 'sha256:abc',
       originChannel: 'ask',
     });
   });
 
   it('throws when operator_did or capability is empty', async () => {
     const tool = createQueryServiceTool({
-      orchestrator: { issueQuery: async () => { throw new Error('unreachable'); } },
+      orchestrator: {
+        issueQueryToDID: async () => { throw new Error('unreachable'); },
+      },
     });
     await expect(tool.execute({
       operator_did: '', capability: 'eta_query', params: {},

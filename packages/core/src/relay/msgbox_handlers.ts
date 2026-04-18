@@ -65,6 +65,13 @@ export interface D2DInboundResult {
   pipelineAction?: string;
   stagingId?: string;
   error?: string;
+  /**
+   * Populated when the receive pipeline returned `action: 'bypassed'` — the
+   * parsed, validated body of a service.query or service.response that the
+   * contact-gate bypass authorised. Callers (the MsgBox boot wiring) hand
+   * this off to Brain's D2D dispatcher so the provider-side handler can run.
+   */
+  bypassedBody?: unknown;
 }
 
 /**
@@ -117,12 +124,16 @@ export async function handleInboundD2D(
       `type=${result.messageType ?? 'unknown'} id=${env.id} action=${result.action}`);
 
     return {
-      success: result.action === 'staged' || result.action === 'ephemeral',
+      success:
+        result.action === 'staged' ||
+        result.action === 'ephemeral' ||
+        result.action === 'bypassed',
       messageType: result.messageType,
       senderDID: env.from_did,
       pipelineAction: result.action,
       stagingId: result.stagingId,
       error: result.action === 'dropped' ? result.reason : undefined,
+      bypassedBody: result.action === 'bypassed' ? result.bypassedBody : undefined,
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'D2D processing failed' };

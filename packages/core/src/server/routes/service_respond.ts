@@ -199,10 +199,15 @@ export function registerServiceRespondRoutes(
 
     // 7. Durable marker + completion.
     void repo.setRunId(task_id, `svc-resp:${task_id}`, nowMsFn());
+    // Carry the `error` string on event details when the response is
+    // non-success (issue #12). The consumer-side formatter reads this
+    // to surface a meaningful user message instead of a generic
+    // "service unavailable".
     const eventDetails = JSON.stringify({
       response_status: status,
       service_name: payload.service_name ?? '',
       capability,
+      error: typeof response_body.error === 'string' ? response_body.error : undefined,
     });
     const eventId = repo.completeWithDetails(
       task_id, '', 'responded', JSON.stringify(d2dBody), eventDetails, nowMsFn(),

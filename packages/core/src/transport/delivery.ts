@@ -90,6 +90,11 @@ export function setWSDeliverFn(fn: WSDeliverFn | null): void {
   wsDeliverFn = fn;
 }
 
+/** Get the installed WS delivery function (null when MsgBox isn't bootstrapped). */
+export function getWSDeliverFn(): WSDeliverFn | null {
+  return wsDeliverFn;
+}
+
 /** Reset all injectable dependencies (for testing). */
 export function resetDeliveryDeps(): void {
   fetchFn = globalThis.fetch;

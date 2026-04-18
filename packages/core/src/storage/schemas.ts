@@ -210,7 +210,23 @@ export const IDENTITY_MIGRATIONS: Migration[] = [
 
       CREATE INDEX IF NOT EXISTS idx_workflow_events_delivery
         ON workflow_events(needs_delivery, next_delivery_at)
-        WHERE needs_delivery = 1
+        WHERE needs_delivery = 1;
+
+      -- Chat messages (review #14). Greenfield schema — no migration
+      -- from the prior in-memory-only design. Stored per thread so the
+      -- UI can list a single conversation efficiently.
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id          TEXT    PRIMARY KEY,
+        thread_id   TEXT    NOT NULL,
+        type        TEXT    NOT NULL,
+        content     TEXT    NOT NULL DEFAULT '',
+        metadata    TEXT    NOT NULL DEFAULT '{}',  -- JSON
+        sources     TEXT    NOT NULL DEFAULT '[]',  -- JSON array
+        timestamp   INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_ts
+        ON chat_messages(thread_id, timestamp ASC)
     `,
   },
 ];

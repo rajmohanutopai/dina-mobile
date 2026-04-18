@@ -83,9 +83,21 @@ export function computeIdempotencyKey(
   toDID: string,
   capability: string,
   params: unknown,
+  schemaHash?: string,
 ): string {
+  // Namespace the dedupe key by `schema_hash` when present (review #8).
+  // Two requests targeting the same (to_did, capability, params) but
+  // pinned to different schema versions are NOT equivalent — they
+  // expect different response shapes. Without this segregation, a
+  // long-running live task pinned to the old schema absorbs a fresh
+  // request pinned to the new one, silently producing the wrong
+  // response shape. Unpinned requests (schema_hash omitted) keep the
+  // prior dedupe identity so existing callers don't regress.
   const canonical = canonicalJSON(params);
-  const input = `${toDID}|${capability}|${canonical}`;
+  const schemaFragment = schemaHash !== undefined && schemaHash !== ''
+    ? `|${schemaHash}`
+    : '';
+  const input = `${toDID}|${capability}|${canonical}${schemaFragment}`;
   return bytesToHex(sha256(new TextEncoder().encode(input)));
 }
 
@@ -166,7 +178,7 @@ export function registerServiceQueryRoutes(
     if (!v.ok) return { status: 400, body: { error: v.error } };
     const q = v.req;
 
-    const idemKey = computeIdempotencyKey(q.to_did, q.capability, q.params);
+    const idemKey = computeIdempotencyKey(q.to_did, q.capability, q.params, q.schema_hash);
     const repo: WorkflowRepository = service.store();
     const existing = repo.getActiveByIdempotencyKey(idemKey);
     if (existing !== null) {
@@ -181,7 +193,14 @@ export function registerServiceQueryRoutes(
     }
 
     const nowSec = nowSecFn();
-    const taskId = `sq-${q.query_id}`;
+    // Namespace the task id by (to_did, capability, query_id). A naked
+    // `sq-${query_id}` collides when a client reuses the same query_id
+    // against different recipients or capabilities (issue #20). The
+    // hash suffix stays short (8 hex chars ≈ 32 bits) — collision
+    // probability across one requester's task space is negligible.
+    const taskId = `sq-${q.query_id}-${bytesToHex(
+      sha256(new TextEncoder().encode(`${q.to_did}|${q.capability}|${q.query_id}`)),
+    ).slice(0, 8)}`;
     const payload = {
       to_did: q.to_did,
       capability: q.capability,

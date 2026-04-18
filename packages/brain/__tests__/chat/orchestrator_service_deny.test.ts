@@ -145,7 +145,7 @@ describe('makeServiceDenyHandler (BRAIN-P2-W05)', () => {
     ).toThrow(/coreClient/);
   });
 
-  it('sends unavailable response + cancels the task (happy path)', async () => {
+  it('sends unavailable response and does NOT double-cancel (review #1 happy path)', async () => {
     const respondCalls: RespondCall[] = [];
     const cancelCalls: CancelCall[] = [];
     const handler = makeServiceDenyHandler(
@@ -159,10 +159,11 @@ describe('makeServiceDenyHandler (BRAIN-P2-W05)', () => {
         body: { status: 'unavailable', error: 'stale data' },
       },
     ]);
-    expect(cancelCalls).toEqual([
-      { taskId: 'approval-u1', reason: 'stale data' },
-    ]);
-    expect(result.ack).toBe('Denied — "approval-u1" cancelled (stale data).');
+    // Review #1: /v1/service/respond already terminates the approval
+    // task. Cancelling again produced false 409s. Happy path has zero
+    // cancel calls now.
+    expect(cancelCalls).toEqual([]);
+    expect(result.ack).toBe('Denied — "approval-u1" (stale data).');
   });
 
   it('defaults empty reason to "denied_by_operator"', async () => {
@@ -175,10 +176,11 @@ describe('makeServiceDenyHandler (BRAIN-P2-W05)', () => {
     await handler('approval-u1', '');
 
     expect(respondCalls[0].body.error).toBe('denied_by_operator');
-    expect(cancelCalls[0].reason).toBe('denied_by_operator');
+    // Respond succeeded, so no cancel fallback.
+    expect(cancelCalls).toEqual([]);
   });
 
-  it('isolates sendServiceRespond errors (cancel still runs)', async () => {
+  it('falls back to cancel when sendServiceRespond fails (review #1 negative path)', async () => {
     const cancelCalls: CancelCall[] = [];
     const handler = makeServiceDenyHandler(
       stubClient({
@@ -188,13 +190,18 @@ describe('makeServiceDenyHandler (BRAIN-P2-W05)', () => {
     );
     const result = await handler('approval-u1', 'reason');
 
+    // Respond threw → cancel fires so the approval doesn't sit
+    // `running` forever.
     expect(cancelCalls).toHaveLength(1);
-    expect(result.ack).toContain('cancelled');
+    expect(cancelCalls[0]).toEqual({ taskId: 'approval-u1', reason: 'reason' });
+    expect(result.ack).toContain('cancelled locally');
+    expect(result.ack).toContain('HTTP 409');
   });
 
-  it('propagates cancelWorkflowTask errors to the orchestrator', async () => {
+  it('propagates cancelWorkflowTask errors on the fallback path', async () => {
     const handler = makeServiceDenyHandler(
       stubClient({
+        respondError: new Error('HTTP 500 — respond blew up'),
         cancelError: new Error('cancelWorkflowTask: HTTP 404 — not found'),
       }),
     );
@@ -216,11 +223,8 @@ describe('makeServiceDenyHandler (BRAIN-P2-W05)', () => {
         body: { status: 'unavailable', error: 'wrong bus route' },
       },
     ]);
-    expect(cancelCalls).toEqual([
-      { taskId: 'approval-e2e', reason: 'wrong bus route' },
-    ]);
-    expect(res.response).toBe(
-      'Denied — "approval-e2e" cancelled (wrong bus route).',
-    );
+    // Single-termination contract — see review #1.
+    expect(cancelCalls).toEqual([]);
+    expect(res.response).toBe('Denied — "approval-e2e" (wrong bus route).');
   });
 });

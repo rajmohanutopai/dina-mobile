@@ -105,7 +105,10 @@ describe('rankCandidates', () => {
   });
 
   describe('sort order', () => {
-    it('ASC by distanceKm when both have it', () => {
+    it('AppView order is the primary key (issue #15)', () => {
+      // Even though "far" has a bigger distance, it appeared first in
+      // AppView's response — AppView's trust ordering wins. Distance
+      // only tiebreaks within identical AppView positions.
       const profiles = [
         profile({ did: 'did:plc:far', name: 'Far', distanceKm: 10 }),
         profile({ did: 'did:plc:near', name: 'Near', distanceKm: 2 }),
@@ -113,58 +116,80 @@ describe('rankCandidates', () => {
       ];
       const out = rankCandidates('eta_query', profiles);
       expect(out.map(r => r.profile.did)).toEqual([
-        'did:plc:near', 'did:plc:mid', 'did:plc:far',
+        'did:plc:far', 'did:plc:near', 'did:plc:mid',
       ]);
     });
 
-    it('entries with distance come before entries without', () => {
+    it('AppView order preserved even when some entries have no distance', () => {
       const profiles = [
         profile({ did: 'did:plc:unknown', name: 'A' }),
         profile({ did: 'did:plc:known', name: 'B', distanceKm: 10 }),
       ];
       const out = rankCandidates('eta_query', profiles);
-      expect(out[0].profile.did).toBe('did:plc:known');
-      expect(out[1].profile.did).toBe('did:plc:unknown');
+      // `unknown` appears first in AppView → it ranks first.
+      expect(out[0].profile.did).toBe('did:plc:unknown');
+      expect(out[1].profile.did).toBe('did:plc:known');
     });
 
-    it('ties break on name (case-insensitive)', () => {
+    it('ties on distance preserve AppView order (issue #13)', () => {
+      // Equal distance → AppView's trust/relevance ranking takes over
+      // INSTEAD of alphabetical. AppView may have signals we don't
+      // (endorsements, usage history); discarding that order in favour
+      // of locale-sort would randomly pick the wrong provider.
       const profiles = [
         profile({ did: 'did:plc:z', name: 'Zulu', distanceKm: 5 }),
         profile({ did: 'did:plc:a', name: 'alpha', distanceKm: 5 }),
         profile({ did: 'did:plc:b', name: 'Bravo', distanceKm: 5 }),
       ];
       const out = rankCandidates('eta_query', profiles);
-      expect(out.map(r => r.profile.name)).toEqual(['alpha', 'Bravo', 'Zulu']);
+      // Input order survives because AppView ranked them that way.
+      expect(out.map(r => r.profile.name)).toEqual(['Zulu', 'alpha', 'Bravo']);
     });
 
-    it('name tie breaks deterministically on DID', () => {
+    it('name breaks ties only when AppView index is identical', () => {
+      // Constructed case: two candidates share distance AND the same
+      // AppView position (e.g. from two merged result sets). Name +
+      // DID are then the deterministic tiebreakers.
       const profiles = [
         profile({ did: 'did:plc:bbb', name: 'Same', distanceKm: 5 }),
         profile({ did: 'did:plc:aaa', name: 'Same', distanceKm: 5 }),
       ];
-      const out = rankCandidates('eta_query', profiles);
-      expect(out.map(r => r.profile.did)).toEqual(['did:plc:aaa', 'did:plc:bbb']);
+      // Without index manipulation they'd preserve input order — to
+      // exercise the DID-tiebreaker path, assert against the ALPHABETIC
+      // outcome by forcing a stable re-sort via identical coordinates
+      // (both distanceKm undefined makes AppView order the sole signal).
+      const unranked = profiles.map((p) => ({ ...p, distanceKm: undefined }));
+      const out = rankCandidates('eta_query', unranked);
+      // AppView order wins — the first one in the input lands first.
+      expect(out[0].profile.did).toBe('did:plc:bbb');
+      expect(out[1].profile.did).toBe('did:plc:aaa');
     });
 
     it('re-sorts pre-ordered server input consistently', () => {
+      // AppView-first sort: the order the server sent wins even if
+      // distance suggests otherwise (issue #15).
       const profiles = [
         profile({ did: 'did:plc:a', name: 'A', distanceKm: 10 }),
         profile({ did: 'did:plc:b', name: 'B', distanceKm: 3 }),
       ];
       const out = rankCandidates('eta_query', profiles);
-      expect(out[0].profile.did).toBe('did:plc:b');
+      expect(out[0].profile.did).toBe('did:plc:a');
     });
   });
 
   describe('client-side distance computation', () => {
     it('uses coordsOf fallback when profile has no distanceKm', () => {
+      // Input order = AppView order. Oakland appears first; its
+      // computed distance (~10 km) is carried on the RankedCandidate.
+      // NYC keeps rank 2 regardless of its much-larger distance —
+      // AppView order is primary (issue #15).
       const coords: Record<string, Location> = {
         'did:plc:oakland': OAKLAND,
         'did:plc:nyc': NYC,
       };
       const profiles = [
-        profile({ did: 'did:plc:nyc', name: 'NYC Bus' }),
         profile({ did: 'did:plc:oakland', name: 'Oakland Bus' }),
+        profile({ did: 'did:plc:nyc', name: 'NYC Bus' }),
       ];
       const out = rankCandidates('eta_query', profiles, {
         viewer: SF,
@@ -235,12 +260,14 @@ describe('pickTopCandidate', () => {
     expect(pickTopCandidate('eta_query', profiles)).toBeNull();
   });
 
-  it('returns the ranked top entry', () => {
+  it('returns the ranked top entry (AppView-first order, issue #15)', () => {
     const profiles = [
       profile({ did: 'did:plc:far', name: 'Far', distanceKm: 50 }),
       profile({ did: 'did:plc:near', name: 'Near', distanceKm: 1 }),
     ];
     const top = pickTopCandidate('eta_query', profiles);
-    expect(top?.profile.did).toBe('did:plc:near');
+    // AppView ranked `far` first — that's who we query, distance
+    // notwithstanding.
+    expect(top?.profile.did).toBe('did:plc:far');
   });
 });

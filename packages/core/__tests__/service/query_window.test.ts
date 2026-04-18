@@ -93,14 +93,17 @@ describe('QueryWindow', () => {
       expect(qw.peek('did:plc:bus42', 'q-peek', 'eta_query')).toBe(false);
     });
 
-    it('overwrites on duplicate open (last-write-wins)', () => {
+    it('keeps distinct capabilities for the same (peer, queryID) — issue #20', () => {
+      // Old behaviour was last-write-wins on (peer, queryID); a reused
+      // query_id with a different capability would silently blow away
+      // the earlier window. The key now includes capability so both
+      // windows coexist and are independently consumable.
       let now = 1_700_000_000_000;
       const qw = new QueryWindow({ nowFn: () => now });
-      qw.open('did:plc:bus42', 'q-003', 'eta_query', 1_000);
+      qw.open('did:plc:bus42', 'q-003', 'eta_query', 60_000);
       qw.open('did:plc:bus42', 'q-003', 'route_info', 60_000);
 
-      // Capability from the second open survives.
-      expect(qw.checkAndConsume('did:plc:bus42', 'q-003', 'eta_query')).toBe(false);
+      expect(qw.checkAndConsume('did:plc:bus42', 'q-003', 'eta_query')).toBe(true);
       expect(qw.checkAndConsume('did:plc:bus42', 'q-003', 'route_info')).toBe(true);
     });
   });

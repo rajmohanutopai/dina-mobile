@@ -18,6 +18,7 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { getChatMessageRepository } from '../../../core/src/chat/repository';
 
 export type MessageType = 'user' | 'dina' | 'approval' | 'nudge' | 'briefing' | 'system' | 'error';
 
@@ -35,7 +36,52 @@ export interface ChatMessage {
 const threads = new Map<string, ChatMessage[]>();
 
 /**
+ * Per-thread subscribers. Fire synchronously after each `addMessage`
+ * write so UI layers (Chat screen) can re-render when async workflow
+ * events land via `addDinaResponse`. Used for issue #2 — the chat
+ * tab must surface responses that arrive AFTER the user's original
+ * message, not just the synchronous reply to their send.
+ */
+const subscribers = new Map<string, Set<(msg: ChatMessage) => void>>();
+
+/**
+ * Subscribe to every message appended to `threadId`. The returned
+ * disposer unsubscribes. Fires synchronously — no microtask — so the
+ * caller can rely on ordering. Subscriber exceptions are swallowed to
+ * prevent one faulty observer from breaking thread writes.
+ */
+export function subscribeToThread(
+  threadId: string,
+  listener: (msg: ChatMessage) => void,
+): () => void {
+  let set = subscribers.get(threadId);
+  if (!set) {
+    set = new Set();
+    subscribers.set(threadId, set);
+  }
+  set.add(listener);
+  return () => {
+    set?.delete(listener);
+  };
+}
+
+function fireSubscribers(msg: ChatMessage): void {
+  const listeners = subscribers.get(msg.threadId);
+  if (!listeners) return;
+  for (const fn of listeners) {
+    try { fn(msg); } catch { /* swallow */ }
+  }
+}
+
+/**
  * Add a message to a thread.
+ *
+ * Review #14: dual-writes to the chat-message repository when one is
+ * installed (via `setChatMessageRepository` on unlock). Persistence
+ * failures are logged but DO NOT propagate — the in-memory store is
+ * the primary surface that subscribers see, so a transient SQLite
+ * error mustn't break the chat UI. On next boot `hydrateThread(id)`
+ * replays whatever the repo has.
  */
 export function addMessage(
   threadId: string,
@@ -60,7 +106,54 @@ export function addMessage(
   };
 
   thread.push(msg);
+  persistMessage(msg);
+  fireSubscribers(msg);
   return msg;
+}
+
+/**
+ * Hydrate a thread's in-memory cache from the persisted repository.
+ * Called by the app layer after unlock (when persistence is wired) so
+ * the chat UI shows prior history on first render. Idempotent —
+ * re-hydrating an already-populated thread is a no-op unless `force`
+ * is passed.
+ */
+export function hydrateThread(threadId: string, opts: { force?: boolean } = {}): number {
+  const repo = getChatMessageRepository();
+  if (repo === null) return 0;
+  if (!opts.force && (threads.get(threadId)?.length ?? 0) > 0) return 0;
+  const rows = repo.listByThread(threadId);
+  const thread: ChatMessage[] = rows.map((r) => ({
+    id: r.id,
+    threadId: r.threadId,
+    type: r.type as MessageType,
+    content: r.content,
+    metadata: Object.keys(r.metadata).length > 0 ? r.metadata : undefined,
+    sources: r.sources.length > 0 ? r.sources : undefined,
+    timestamp: r.timestamp,
+  }));
+  threads.set(threadId, thread);
+  return thread.length;
+}
+
+/** Write-through helper — silently swallows repo errors (see addMessage). */
+function persistMessage(msg: ChatMessage): void {
+  const repo = getChatMessageRepository();
+  if (repo === null) return;
+  try {
+    repo.append({
+      id: msg.id,
+      threadId: msg.threadId,
+      type: msg.type,
+      content: msg.content,
+      metadata: msg.metadata ?? {},
+      sources: msg.sources ?? [],
+      timestamp: msg.timestamp,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[chat] persist failed:', err);
+  }
 }
 
 /**
@@ -111,9 +204,20 @@ export function listThreads(): string[] {
 }
 
 /**
- * Delete a thread.
+ * Delete a thread — including any subscribers registered against it
+ * (review #15). Leaving the subscriber set behind was a silent leak:
+ * next time the same threadId was recreated, stale listeners would
+ * fire for messages they weren't meant to see.
  */
 export function deleteThread(threadId: string): boolean {
+  subscribers.delete(threadId);
+  const repo = getChatMessageRepository();
+  if (repo !== null) {
+    try { repo.deleteThread(threadId); } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[chat] persist delete failed:', err);
+    }
+  }
   return threads.delete(threadId);
 }
 
@@ -142,7 +246,37 @@ export function addSystemMessage(threadId: string, content: string): ChatMessage
   return addMessage(threadId, 'system', content);
 }
 
+/**
+ * Add an approval-request card to the thread. Use this instead of
+ * `addDinaResponse` for pending-approval prompts so the UI can render
+ * a distinct card (approve / deny buttons) instead of a plain text
+ * reply. Metadata carries the fields the card needs: taskId,
+ * capability, fromDID, serviceName, and the slash-command the
+ * operator can paste if they prefer text entry (review #13).
+ */
+export function addApprovalMessage(
+  threadId: string,
+  content: string,
+  metadata: {
+    taskId: string;
+    capability: string;
+    fromDID: string;
+    serviceName: string;
+    approveCommand: string;
+  },
+): ChatMessage {
+  return addMessage(threadId, 'approval', content, {
+    metadata,
+    sources: [metadata.taskId, metadata.capability],
+  });
+}
+
 /** Reset all threads (for testing). */
 export function resetThreads(): void {
   threads.clear();
+  subscribers.clear();
+  const repo = getChatMessageRepository();
+  if (repo !== null) {
+    try { repo.reset(); } catch { /* swallow — tests proceed regardless */ }
+  }
 }

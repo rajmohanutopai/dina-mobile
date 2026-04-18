@@ -82,27 +82,103 @@ export function makeServiceResponseBridgeSender(
   const onMalformedResult = options.onMalformedResult ?? (() => { /* no-op */ });
 
   return async (ctx: ServiceQueryBridgeContext) => {
-    let result: unknown;
+    let parsed: unknown;
+    let parseError: Error | null = null;
     try {
       // `resultJSON` is empty when the runner called `complete` with a
       // summary-only finish (rare but legal). Treat that as a success
       // with an undefined `result` field.
-      result = ctx.resultJSON === '' ? undefined : JSON.parse(ctx.resultJSON);
+      parsed = ctx.resultJSON === '' ? undefined : JSON.parse(ctx.resultJSON);
     } catch (e) {
-      onMalformedResult(ctx, e instanceof Error ? e : new Error(String(e)));
+      parseError = e instanceof Error ? e : new Error(String(e));
+      onMalformedResult(ctx, parseError);
+    }
+
+    // Issue #16: when the runner's output is unparseable, still emit an
+    // error `service.response` to the requester so they stop waiting
+    // for TTL. Previously this path silently dropped the response.
+    if (parseError !== null) {
+      const errorBody: ServiceResponseBody = {
+        query_id: ctx.queryId,
+        capability: ctx.capability,
+        status: 'error',
+        error: `malformed_result: ${parseError.message}`,
+        ttl_seconds: ctx.ttlSeconds,
+      };
+      try {
+        await options.sendResponse(ctx.fromDID, errorBody);
+      } catch (e) {
+        onSendError(ctx, e instanceof Error ? e : new Error(String(e)));
+      }
       return;
     }
-    const body: ServiceResponseBody = {
-      query_id: ctx.queryId,
-      capability: ctx.capability,
-      status: 'success',
-      result,
-      ttl_seconds: ctx.ttlSeconds,
-    };
+    // Issue #11: derive status + result + error from what the runner
+    // actually produced. If the runner returned a recognisable
+    // `ServiceResponseBody`-shaped object, forward its status verbatim
+    // (so `unavailable` / `error` responses reach the requester
+    // faithfully). Otherwise treat the runner's payload as a success
+    // result wrapping.
+    const body: ServiceResponseBody = deriveResponseBody(ctx, parsed);
     try {
       await options.sendResponse(ctx.fromDID, body);
     } catch (e) {
       onSendError(ctx, e instanceof Error ? e : new Error(String(e)));
     }
+  };
+}
+
+/**
+ * Inspect the runner's result and produce the `ServiceResponseBody` to
+ * send back. Three cases:
+ *
+ *   1. Result is an object carrying an explicit `status` of `unavailable`
+ *      or `error`: forward it verbatim (with `error` string + optional
+ *      result payload) so the requester sees the real outcome rather
+ *      than a fake "success".
+ *   2. Result is an object with `status: 'success'`: strip the wrapper
+ *      and forward the nested result as the body's `result` field.
+ *   3. Anything else (plain result or undefined): wrap as success.
+ *
+ * This is the single place the bridge classifies runner output — Core
+ * cannot schema-validate (ajv would bloat the RN bundle), so the
+ * classification stays conservative: only explicitly-tagged outputs
+ * opt into a non-success status.
+ */
+function deriveResponseBody(
+  ctx: ServiceQueryBridgeContext,
+  parsed: unknown,
+): ServiceResponseBody {
+  if (parsed !== null && typeof parsed === 'object') {
+    const obj = parsed as Record<string, unknown>;
+    const status = obj.status;
+    if (status === 'unavailable' || status === 'error') {
+      const errField = typeof obj.error === 'string' ? obj.error : undefined;
+      return {
+        query_id: ctx.queryId,
+        capability: ctx.capability,
+        status,
+        // Non-success responses typically omit `result`. Forward it only
+        // when the runner explicitly attached one for diagnostics.
+        result: obj.result,
+        error: errField,
+        ttl_seconds: ctx.ttlSeconds,
+      };
+    }
+    if (status === 'success' && 'result' in obj) {
+      return {
+        query_id: ctx.queryId,
+        capability: ctx.capability,
+        status: 'success',
+        result: obj.result,
+        ttl_seconds: ctx.ttlSeconds,
+      };
+    }
+  }
+  return {
+    query_id: ctx.queryId,
+    capability: ctx.capability,
+    status: 'success',
+    result: parsed,
+    ttl_seconds: ctx.ttlSeconds,
   };
 }

@@ -171,20 +171,20 @@ describe('claimApprovalForExecution', () => {
     expect(r.claimApprovalForExecution('ghost', 60, 0)).toBe(false);
   });
 
-  it('fails on pending_approval (must be approved → queued first)', () => {
-    // Semantic guardrail: a task waiting for operator review cannot be
-    // execution-claimed directly — the approval flow must move it to
-    // `queued` via `WorkflowService.approve` before a claim is valid.
+  it('allows pending_approval claim (deny / TTL-expiry path — issue #10)', () => {
+    // Contract shift: a `pending_approval` approval task CAN be
+    // claimed for execution. This is how `/service_deny` and the
+    // ApprovalReconciler push an `unavailable` response back to the
+    // requester before the task is cancelled/failed. The operator-
+    // approved `queued` path remains claimable as well.
     const r = new InMemoryWorkflowRepository();
     r.create(baseTask({
       id: 'a',
       kind: WorkflowTaskKind.Approval,
       status: WorkflowTaskState.PendingApproval,
     }));
-    expect(r.claimApprovalForExecution('a', 60, 0)).toBe(false);
-    // Ensure the task wasn't mutated by the rejected claim.
-    expect(r.getById('a')?.status).toBe('pending_approval');
-    expect(r.getById('a')?.expires_at).toBe(1_700_000_060);
+    expect(r.claimApprovalForExecution('a', 60, 0)).toBe(true);
+    expect(r.getById('a')?.status).toBe('running');
   });
 });
 
@@ -393,13 +393,13 @@ describe('event delivery', () => {
 
   it('lists only needs_delivery=true events whose next_delivery_at is due', () => {
     const { r, idPending } = setupWithEvents();
-    const pending = r.listUndeliveredEvents(500, 100);
+    const pending = r.listUndeliveredEvents(500, 0, 100);
     expect(pending.map(e => e.event_id)).toEqual([idPending]);
   });
 
   it('includes events once their next_delivery_at is reached', () => {
     const { r, idPending, idDelayed } = setupWithEvents();
-    const pending = r.listUndeliveredEvents(2_000, 100);
+    const pending = r.listUndeliveredEvents(2_000, 0, 100);
     expect(pending.map(e => e.event_id).sort((a, b) => a - b)).toEqual(
       [idPending, idDelayed].sort((a, b) => a - b),
     );
@@ -407,14 +407,14 @@ describe('event delivery', () => {
 
   it('respects the limit', () => {
     const { r } = setupWithEvents();
-    const pending = r.listUndeliveredEvents(10_000, 1);
+    const pending = r.listUndeliveredEvents(10_000, 0, 1);
     expect(pending).toHaveLength(1);
   });
 
   it('markEventDelivered clears needs_delivery + sets delivered_at', () => {
     const { r, idPending } = setupWithEvents();
     expect(r.markEventDelivered(idPending, 9_999)).toBe(true);
-    const still = r.listUndeliveredEvents(10_000, 10);
+    const still = r.listUndeliveredEvents(10_000, 0, 10);
     expect(still.map(e => e.event_id)).not.toContain(idPending);
     // delivery_failed cleared too.
     const evt = r.listEventsForTask('a').find(e => e.event_id === idPending);

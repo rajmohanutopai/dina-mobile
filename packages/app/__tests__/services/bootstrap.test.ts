@@ -170,9 +170,13 @@ describe('createNode — input validation', () => {
     }))).rejects.toThrow(/sendD2D/);
   });
 
-  it('rejects provider role without pdsPublisher', async () => {
-    await expect(createNode(baseOptions({ role: 'provider' })))
-      .rejects.toThrow(/pdsPublisher/);
+  it('allows provider role without pdsPublisher (no-public-discovery mode)', async () => {
+    // Providers that expose capabilities only to known peers can skip
+    // the PDS publisher entirely — the start() path guards on null and
+    // simply doesn't publish a service-profile record.
+    const node = await createNode(baseOptions({ role: 'provider' }));
+    expect(node).toBeDefined();
+    await node.dispose();
   });
 });
 
@@ -308,10 +312,16 @@ describe('createNode — onApproved wiring', () => {
 });
 
 describe('createNode — globalWiring', () => {
-  it('with globalWiring=true installs chat handlers; dispose() clears them', async () => {
+  it('with globalWiring=true, start() installs chat handlers; dispose() clears them', async () => {
+    // Issue #8 contract: globals aren't wired until start(). Before
+    // start(), the handler is still the "coming soon" fallback.
     const node = await createNode(baseOptions({ globalWiring: true }));
     const { handleChat } = require('../../../brain/src/chat/orchestrator');
-    // After bootstrap, /service has an installed handler (not the "coming soon" fallback).
+    const preStartAck = (await handleChat('/service eta_query test')).response;
+    expect(preStartAck).toContain("isn't wired up");
+
+    await node.start();
+    // After start, /service has an installed handler (not the fallback).
     const ack = (await handleChat('/service eta_query test')).response;
     expect(ack).not.toContain("isn't wired up");
     await node.dispose();
@@ -379,6 +389,8 @@ describe('createNode — agenticAsk wiring', () => {
       globalWiring: true,
       agenticAsk: { provider: provider as never, tools },
     }));
+    // Chat globals are deferred to start() (issue #8).
+    await node.start();
     const { handleChat } = require('../../../brain/src/chat/orchestrator');
     const res = await handleChat('/ask is it raining?');
     expect(res.response).toBe('agentic reply');

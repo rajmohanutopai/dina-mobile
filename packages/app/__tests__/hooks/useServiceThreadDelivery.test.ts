@@ -69,6 +69,7 @@ function stubCore(init: {
     async getWorkflowTask() {
       return init.task ?? null;
     },
+    async failWorkflowEventDelivery() { return true; },
   };
   return { client, acks };
 }
@@ -123,6 +124,7 @@ describe('useServiceThreadDelivery', () => {
       async listWorkflowEvents() { throw new Error('core down'); },
       async acknowledgeWorkflowEvent() { return true; },
       async getWorkflowTask() { return null; },
+      async failWorkflowEventDelivery() { return true; },
     };
     const errs: unknown[] = [];
     const handle = wireServiceThreadDelivery({

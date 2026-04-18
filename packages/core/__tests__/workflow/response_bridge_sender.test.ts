@@ -98,8 +98,72 @@ describe('makeServiceResponseBridgeSender — happy path', () => {
   });
 });
 
+describe('makeServiceResponseBridgeSender — status derivation (issue #11)', () => {
+  it('forwards status=unavailable verbatim when the runner tagged its result', async () => {
+    const calls: SendCall[] = [];
+    const bridge = makeServiceResponseBridgeSender({
+      sendResponse: makeSender({ calls }),
+    });
+    await bridge({
+      ...SAMPLE_CTX,
+      resultJSON: JSON.stringify({
+        status: 'unavailable',
+        error: 'schedule_offline',
+      }),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.status).toBe('unavailable');
+    expect(calls[0].body.error).toBe('schedule_offline');
+  });
+
+  it('forwards status=error verbatim including the error string', async () => {
+    const calls: SendCall[] = [];
+    const bridge = makeServiceResponseBridgeSender({
+      sendResponse: makeSender({ calls }),
+    });
+    await bridge({
+      ...SAMPLE_CTX,
+      resultJSON: JSON.stringify({
+        status: 'error',
+        error: 'params_invalid: lat out of range',
+      }),
+    });
+    expect(calls[0].body.status).toBe('error');
+    expect(calls[0].body.error).toBe('params_invalid: lat out of range');
+  });
+
+  it('unwraps an explicit success envelope and surfaces the nested result', async () => {
+    const calls: SendCall[] = [];
+    const bridge = makeServiceResponseBridgeSender({
+      sendResponse: makeSender({ calls }),
+    });
+    await bridge({
+      ...SAMPLE_CTX,
+      resultJSON: JSON.stringify({
+        status: 'success',
+        result: { eta_minutes: 7 },
+      }),
+    });
+    expect(calls[0].body.status).toBe('success');
+    expect(calls[0].body.result).toEqual({ eta_minutes: 7 });
+  });
+
+  it('wraps a plain object result as success (no opt-in status field)', async () => {
+    const calls: SendCall[] = [];
+    const bridge = makeServiceResponseBridgeSender({
+      sendResponse: makeSender({ calls }),
+    });
+    await bridge({
+      ...SAMPLE_CTX,
+      resultJSON: JSON.stringify({ eta_minutes: 45 }),
+    });
+    expect(calls[0].body.status).toBe('success');
+    expect(calls[0].body.result).toEqual({ eta_minutes: 45 });
+  });
+});
+
 describe('makeServiceResponseBridgeSender — error paths', () => {
-  it('invokes onMalformedResult on unparseable JSON; does NOT call sendResponse', async () => {
+  it('on unparseable JSON: fires onMalformedResult AND sends an error service.response (issue #16)', async () => {
     const calls: SendCall[] = [];
     const malformed: Array<{ ctx: ServiceQueryBridgeContext; err: Error }> = [];
     const bridge = makeServiceResponseBridgeSender({
@@ -107,9 +171,14 @@ describe('makeServiceResponseBridgeSender — error paths', () => {
       onMalformedResult: (ctx, err) => malformed.push({ ctx, err }),
     });
     await bridge({ ...SAMPLE_CTX, resultJSON: '{not json' });
-    expect(calls).toHaveLength(0);
+    // Observability hook still fires for telemetry.
     expect(malformed).toHaveLength(1);
     expect(malformed[0].ctx.queryId).toBe('q-1');
+    // AND a real error envelope is delivered so the requester stops
+    // waiting on TTL expiry. Previously this path silently dropped.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.status).toBe('error');
+    expect(calls[0].body.error).toMatch(/malformed_result:/);
   });
 
   it('invokes onSendError when the transport rejects; never throws out of the bridge', async () => {

@@ -75,7 +75,10 @@ export type ApprovalEventDispatcher = (args: {
 export interface WorkflowEventConsumerCoreClient
   extends Pick<
     BrainCoreClient,
-    'listWorkflowEvents' | 'acknowledgeWorkflowEvent' | 'getWorkflowTask'
+    | 'listWorkflowEvents'
+    | 'acknowledgeWorkflowEvent'
+    | 'getWorkflowTask'
+    | 'failWorkflowEventDelivery'
   > {}
 
 export interface WorkflowEventConsumerOptions {
@@ -232,12 +235,31 @@ export class WorkflowEventConsumer {
     event: WorkflowEvent,
     result: WorkflowEventTickResult,
   ): Promise<void> {
-    // Fast path: event kinds this consumer never dispatches on get acked
-    // immediately to retire them from Core's delivery queue. `failed` /
-    // `cancelled` events are surfaced by the orchestrator's own code
-    // paths; this consumer is sole owner of the delivery scheduler.
-    if (event.event_kind !== 'completed' && event.event_kind !== 'approved') {
-      await this.ackAndTrack(event, 'skipped', result);
+    // Event kinds this consumer routes:
+    //   - completed  → successful service_query delivery
+    //   - failed     → TTL expiry / provider rejection (issue #11)
+    //   - cancelled  → operator deny / task cancel (issue #11)
+    //   - approved   → approval-queue kickoff (→ onApproved dispatcher)
+    //
+    // Review #4: unknown event kinds used to be ACKed-and-dropped,
+    // which was only safe while the workflow-events queue was
+    // service-query-only. Once another feature (e.g. delegation,
+    // reminders, outbox) shares the queue, this consumer would
+    // silently retire their events. We now mark the event as
+    // delivery-failed instead: Core's delivery scheduler backs off
+    // so no one hot-loops on it, but the event stays available for
+    // a future consumer that knows how to handle its kind.
+    const DELIVERABLE_KINDS = new Set(['completed', 'failed', 'cancelled', 'approved']);
+    if (!DELIVERABLE_KINDS.has(event.event_kind)) {
+      this.log({
+        event: 'workflow_event.unknown_kind',
+        event_id: event.event_id,
+        event_kind: event.event_kind,
+      });
+      await this.markDeliveryFailed(
+        event,
+        new Error(`unknown event kind: ${event.event_kind}`),
+      );
       return;
     }
     // `approved` events are only meaningful when an onApproved dispatcher
@@ -266,6 +288,12 @@ export class WorkflowEventConsumer {
         task_id: event.task_id,
         error: err.message,
       });
+      // Review #2: negative-ack so Core pushes next_delivery_at out
+      // instead of hot-looping on a Core that's flaking on
+      // getWorkflowTask (e.g. transient 5xx). Previously the branch
+      // returned without marking, so every subsequent tick re-fetched
+      // the same event.
+      await this.markDeliveryFailed(event, err);
       return;
     }
 
@@ -280,11 +308,34 @@ export class WorkflowEventConsumer {
         await this.ackAndTrack(event, 'skipped', result);
         return;
       }
+      // Review #4: re-read the task's CURRENT state before dispatching.
+      // A redriven `approved` event can arrive after the task has
+      // already been failed / cancelled by the expiry reconciler or
+      // a manual `/service_deny` — dispatching in those cases would
+      // spawn execution on a task that's no longer live. We only
+      // dispatch when the task is in the narrow set of states that
+      // still represent "operator said yes and nothing terminal has
+      // happened yet": queued + running (claimed by a previous event)
+      // + pending_approval (race against reconciler).
+      const DISPATCHABLE: ReadonlySet<string> = new Set([
+        'queued',
+        'running',
+        'pending_approval',
+      ]);
+      if (!DISPATCHABLE.has(task.status)) {
+        this.log({
+          event: 'workflow_event.approved_skipped_terminal',
+          task_id: task.id,
+          task_state: task.status,
+        });
+        await this.ackAndTrack(event, 'skipped', result);
+        return;
+      }
       await this.dispatchApproved(event, task, result);
       return;
     }
 
-    // event_kind === 'completed'
+    // event_kind in ('completed', 'failed', 'cancelled')
     if (task.kind !== 'service_query') {
       await this.ackAndTrack(event, 'skipped', result);
       return;
@@ -310,12 +361,44 @@ export class WorkflowEventConsumer {
         event_id: event.event_id,
         error: err.message,
       });
-      // Do NOT ack: delivery failed, let Core re-surface this event so a
-      // retry can land the text (idempotency is the deliverer's concern).
+      // Negative-ack with exponential-ish backoff: let Core push
+      // `next_delivery_at` out so subsequent `needs_delivery=true`
+      // sweeps don't immediately re-surface this event. Previously
+      // a failing deliverer caused a hot loop at every tick (review
+      // #6). The consumer tolerates the mark-fail call itself
+      // failing — we simply don't ack and let Core retry.
+      await this.markDeliveryFailed(event, err);
       return;
     }
 
     await this.ackAndTrack(event, 'delivered', result);
+  }
+
+  /**
+   * Record a delivery/dispatch failure with Core so the event's
+   * `next_delivery_at` backs off. Failures to record are swallowed —
+   * the sweeper's own retry is still in effect, so we never want a
+   * negative-ack hiccup to cascade into a thrown exception inside
+   * the consumer's error path.
+   */
+  private async markDeliveryFailed(event: WorkflowEvent, err: Error): Promise<void> {
+    // Exponential-ish backoff floor: 1s for the first failure, doubling
+    // every attempt, capped at 5 minutes. The `(delivery_attempts + 1)`
+    // reflects THIS attempt being the one we're about to record.
+    const attempt = event.delivery_attempts + 1;
+    const backoffMs = Math.min(1_000 * Math.pow(2, Math.min(attempt, 10)), 5 * 60_000);
+    try {
+      await this.core.failWorkflowEventDelivery(event.event_id, {
+        nextDeliveryAt: Date.now() + backoffMs,
+        error: err.message,
+      });
+    } catch (markErr) {
+      this.log({
+        event: 'workflow_event.mark_fail_failed',
+        event_id: event.event_id,
+        error: markErr instanceof Error ? markErr.message : String(markErr),
+      });
+    }
   }
 
   /**
@@ -350,6 +433,14 @@ export class WorkflowEventConsumer {
         event: 'workflow_event.approved_payload_invalid',
         task_id: task.id,
       });
+      // Review #3: malformed payload is not going to fix itself on
+      // retry — but the consumer has no authority to archive events,
+      // so mark it failed with a long backoff. Core's delivery
+      // scheduler will stop hot-looping; an operator can inspect the
+      // event + task via diagnostics and cancel the task manually.
+      // Previously this branch returned without marking, so every
+      // tick resurrected the same bad event.
+      await this.markDeliveryFailed(event, err);
       return;
     }
 
@@ -370,7 +461,9 @@ export class WorkflowEventConsumer {
         event_id: event.event_id,
         error: err.message,
       });
-      // Do NOT ack: dispatch failed, let Core redrive.
+      // Negative-ack (review #6) — same reasoning as the deliver
+      // path: let Core back off instead of re-surfacing on every tick.
+      await this.markDeliveryFailed(event, err);
       return;
     }
 
@@ -379,8 +472,9 @@ export class WorkflowEventConsumer {
 
   /**
    * Merge `event.details` with the task's stored `result` (the full D2D
-   * `service.response` body) so the formatter sees both the metadata
-   * written at completion time and the capability payload.
+   * `service.response` body) + the task's `payload` (capability + service
+   * name) so the formatter sees everything it needs regardless of which
+   * event kind triggered delivery (completed / failed / cancelled).
    */
   private composeDetails(
     event: WorkflowEvent,
@@ -392,6 +486,44 @@ export class WorkflowEventConsumer {
       if (parsed !== null && typeof parsed === 'object') details = parsed;
     } catch {
       /* malformed details — fall through with an empty object */
+    }
+
+    // Backfill capability + service_name from the task payload when the
+    // event details didn't carry them (most non-completed events don't).
+    if (!details.capability || !details.service_name) {
+      try {
+        const payload = JSON.parse(task.payload) as {
+          capability?: unknown;
+          service_name?: unknown;
+        };
+        if (!details.capability && typeof payload.capability === 'string') {
+          details.capability = payload.capability;
+        }
+        if (!details.service_name && typeof payload.service_name === 'string') {
+          details.service_name = payload.service_name;
+        }
+      } catch {
+        /* malformed payload — formatter shows generic "Service" */
+      }
+    }
+
+    // Map event_kind → response_status when details didn't specify one.
+    // `failed` events from expiry fan-out already set response_status=
+    // 'expired'; `cancelled` events from /service_deny just carry
+    // {reason} so we synthesise `response_status='unavailable'` and
+    // promote the reason into the `error` slot.
+    if (details.response_status === undefined || details.response_status === '') {
+      if (event.event_kind === 'cancelled') {
+        details.response_status = 'unavailable';
+        if (!details.error) {
+          try {
+            const c = JSON.parse(event.details) as { reason?: unknown };
+            if (typeof c.reason === 'string' && c.reason !== '') details.error = c.reason;
+          } catch { /* malformed */ }
+        }
+      } else if (event.event_kind === 'failed') {
+        details.response_status = 'error';
+      }
     }
 
     if (typeof task.result === 'string' && task.result !== '') {

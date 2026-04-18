@@ -13,9 +13,11 @@
  * Source: ARCHITECTURE.md Task 4.6
  */
 
+import { useCallback, useEffect, useState } from 'react';
 import {
-  getThread, getRecentMessages, addUserMessage, addSystemMessage,
+  getThread, getRecentMessages, addSystemMessage,
   threadLength, listThreads, deleteThread, resetThreads,
+  subscribeToThread,
   type ChatMessage, type MessageType,
 } from '../../../brain/src/chat/thread';
 import { handleChat, type ChatResponse } from '../../../brain/src/chat/orchestrator';
@@ -158,4 +160,59 @@ export function resetChatState(): void {
   typingState.clear();
   lastUserMessageAt.clear();
   lastDinaResponseAt.clear();
+}
+
+// ---------------------------------------------------------------------------
+// React hook — live-subscribes to the thread store so async workflow-event
+// replies surface on-screen without polling. Issues #1 + #2.
+// ---------------------------------------------------------------------------
+
+export interface UseLiveThreadResult {
+  /** All messages in this thread, chronological order. Re-renders on writes. */
+  messages: ChatMessage[];
+  /** Route user input through Brain's `handleChat` — /ask / /service / etc. */
+  send: (text: string) => Promise<ChatResponse | null>;
+  /** True while a send is in flight. */
+  sending: boolean;
+}
+
+/**
+ * Bridge between the Chat screen and Brain's thread store + orchestrator.
+ * Subscribes once on mount; updates on every `addMessage` write — including
+ * async arrivals from `WorkflowEventConsumer.deliver` (the whole point of
+ * issue #2's fix). `send()` routes through `handleChat` so the Chat tab
+ * actually uses the installed /ask / /service / /service_approve handlers
+ * that createNode wired up (issues #1, #3).
+ */
+export function useLiveThread(threadId: string = DEFAULT_THREAD): UseLiveThreadResult {
+  const [messages, setMessages] = useState<ChatMessage[]>(() => getThread(threadId));
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    // Snapshot on mount / thread switch.
+    setMessages(getThread(threadId));
+    const unsubscribe = subscribeToThread(threadId, () => {
+      setMessages(getThread(threadId));
+    });
+    return unsubscribe;
+  }, [threadId]);
+
+  const send = useCallback(
+    async (text: string): Promise<ChatResponse | null> => {
+      const trimmed = text.trim();
+      if (trimmed === '') return null;
+      setSending(true);
+      try {
+        // handleChat persists both the user message AND the orchestrator's
+        // synchronous reply into the thread. Our subscription picks up
+        // both; async arrivals (workflow events) land the same way.
+        return await sendMessage(trimmed, threadId);
+      } finally {
+        setSending(false);
+      }
+    },
+    [threadId],
+  );
+
+  return { messages, send, sending };
 }

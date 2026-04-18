@@ -72,19 +72,30 @@ export function makeServiceDenyHandler(
   }
   return async (taskId: string, reason: string) => {
     const denyReason = reason.trim() === '' ? 'denied_by_operator' : reason.trim();
-    // Best-effort — mirrors ApprovalReconciler. A failed send still lets the
-    // cancel proceed; the requester falls back to TTL expiry.
+    // `/v1/service/respond` ALREADY claims the approval task and
+    // transitions it to `completed`. Calling `cancelWorkflowTask`
+    // after a successful respond double-terminates — the second call
+    // races the task's terminal state and can return 409, which the
+    // operator sees as a failed deny even though the requester got
+    // their denial (review #1). Only cancel when respond itself
+    // failed, so the approval doesn't sit in `running` forever.
+    let respondFailed: Error | null = null;
     try {
       await coreClient.sendServiceRespond(taskId, {
         status: 'unavailable',
         error: denyReason,
       });
-    } catch {
-      // Swallow — cancel below is the authoritative state change.
+    } catch (err) {
+      respondFailed = err instanceof Error ? err : new Error(String(err));
     }
-    await coreClient.cancelWorkflowTask(taskId, denyReason);
+    if (respondFailed !== null) {
+      await coreClient.cancelWorkflowTask(taskId, denyReason);
+      return {
+        ack: `Denied — "${taskId}" cancelled locally (respond failed: ${respondFailed.message}).`,
+      };
+    }
     return {
-      ack: `Denied — "${taskId}" cancelled (${denyReason}).`,
+      ack: `Denied — "${taskId}" (${denyReason}).`,
     };
   };
 }

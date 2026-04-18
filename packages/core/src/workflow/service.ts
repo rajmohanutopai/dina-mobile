@@ -349,6 +349,13 @@ export class WorkflowService {
       );
     }
     const updated = this.repo.getById(id);
+    // Fire the Response Bridge with an error envelope for service-query
+    // delegation failures (issue #7). Without this, a runner-side error
+    // leaves the requester waiting out TTL with no signal.
+    this.bridgeServiceQueryCompletion(
+      updated ?? task,
+      JSON.stringify({ status: 'error', error: errorMsg }),
+    );
     return updated ?? task;
   }
 

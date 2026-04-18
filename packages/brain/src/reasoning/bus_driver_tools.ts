@@ -18,7 +18,6 @@ import type { AgentTool } from './tool_registry';
 import type { AppViewClient, ServiceProfile } from '../appview_client/http';
 import type {
   ServiceQueryOrchestrator,
-  IssueQueryRequest,
 } from '../service/service_query_orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +41,14 @@ export interface GeocodeToolOptions {
    * 1_100 ms.
    */
   minGapMs?: number;
+  /**
+   * Hard timeout for a single Nominatim HTTP call. Default 10_000 ms.
+   * Without this a stalled upstream can hang the whole agentic tool
+   * loop because the loop awaits `execute()` synchronously (review
+   * #18). On timeout the tool throws a "geocode: timeout" error which
+   * the loop catches and returns to the LLM as a tool failure.
+   */
+  timeoutMs?: number;
 }
 
 export interface GeocodeResult {
@@ -53,6 +60,7 @@ export interface GeocodeResult {
 const DEFAULT_NOMINATIM_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const DEFAULT_USER_AGENT = 'dina-mobile/0.0.1 (ops@dinakernel.com)';
 const DEFAULT_MIN_GAP_MS = 1_100;
+const DEFAULT_GEOCODE_TIMEOUT_MS = 10_000;
 
 /**
  * Factory — returns an `AgentTool` that geocodes a free-text address via
@@ -65,6 +73,7 @@ export function createGeocodeTool(options: GeocodeToolOptions = {}): AgentTool {
   const endpoint = options.endpoint ?? DEFAULT_NOMINATIM_ENDPOINT;
   const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
   const minGapMs = options.minGapMs ?? DEFAULT_MIN_GAP_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GEOCODE_TIMEOUT_MS;
   let lastCallMs = 0;
 
   return {
@@ -90,9 +99,25 @@ export function createGeocodeTool(options: GeocodeToolOptions = {}): AgentTool {
       }
       lastCallMs = Date.now();
       const url = `${endpoint}?q=${encodeURIComponent(address)}&format=jsonv2&limit=1`;
-      const resp = await fetchFn(url, {
-        headers: { 'User-Agent': userAgent, Accept: 'application/json' },
-      });
+      // Review #18: hard timeout — the agentic loop awaits execute()
+      // synchronously, so a stalled Nominatim response would freeze the
+      // whole chat turn until the LLM gave up.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let resp: Response;
+      try {
+        resp = await fetchFn(url, {
+          headers: { 'User-Agent': userAgent, Accept: 'application/json' },
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if ((err as Error).name === 'AbortError' || controller.signal.aborted) {
+          throw new Error(`geocode: timeout after ${timeoutMs}ms`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
       if (!resp.ok) {
         throw new Error(`geocode: HTTP ${resp.status}`);
       }
@@ -209,7 +234,7 @@ function toLLMProfile(p: ServiceProfile): {
 // ---------------------------------------------------------------------------
 
 export interface QueryServiceToolOptions {
-  orchestrator: Pick<ServiceQueryOrchestrator, 'issueQuery'>;
+  orchestrator: Pick<ServiceQueryOrchestrator, 'issueQueryToDID'>;
 }
 
 /**
@@ -248,6 +273,10 @@ export function createQueryServiceTool(
           type: 'string',
           description: 'The per-capability schema hash from search_public_services (forwarded for version safety).',
         },
+        service_name: {
+          type: 'string',
+          description: 'The provider\'s display name from search_public_services (used as the acknowledgement label).',
+        },
         ttl_seconds: {
           type: 'number',
           description: 'Optional TTL override. Default comes from the capability registry.',
@@ -268,22 +297,38 @@ export function createQueryServiceTool(
       if (operatorDID === '' || capability === '') {
         throw new Error('query_service: operator_did and capability are required');
       }
-      const params = (args.params as Record<string, unknown> | undefined) ?? {};
+      // Review #12: `params` is declared required by the tool schema
+      // and every known capability expects a concrete shape (eta_query
+      // needs route_id + location, etc.). Silently substituting {}
+      // hid bugs where the LLM called query_service without having
+      // ever called geocode → search_public_services first. Fail
+      // fast so the loop surfaces a tool error back to the LLM and
+      // it retries correctly.
+      if (args.params === undefined || args.params === null) {
+        throw new Error('query_service: params is required');
+      }
+      if (typeof args.params !== 'object' || Array.isArray(args.params)) {
+        throw new Error('query_service: params must be a JSON object');
+      }
+      const params = args.params as Record<string, unknown>;
       const schemaHash = typeof args.schema_hash === 'string' ? args.schema_hash : undefined;
+      const serviceName = typeof args.service_name === 'string' ? args.service_name : undefined;
       const ttl = typeof args.ttl_seconds === 'number' ? args.ttl_seconds : undefined;
-      const req: IssueQueryRequest = {
+      // Issue #7: dispatch to the EXACT DID + schema_hash the LLM chose
+      // (typically from a prior `search_public_services` call). No
+      // AppView re-search, no ranker substitution.
+      // Issue #14: forward the service_name through so the orchestrator
+      // has a human-readable label for ack/formatting instead of
+      // falling back to the DID.
+      const result = await options.orchestrator.issueQueryToDID({
+        toDID: operatorDID,
         capability,
         params,
         ttlSeconds: ttl,
+        schemaHash,
+        serviceName,
         originChannel: 'ask',
-      };
-      const result = await options.orchestrator.issueQuery(req);
-      // orchestrator picks the top candidate itself — we stamp the
-      // caller-supplied DID into the result so the LLM sees what it
-      // asked for even if the orchestrator's ranker picked a different
-      // provider (caller override via subsequent tools is possible).
-      void operatorDID;
-      void schemaHash;
+      });
       return {
         task_id: result.taskId,
         query_id: result.queryId,

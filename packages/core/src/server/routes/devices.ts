@@ -10,6 +10,7 @@ import {
   registerDevice,
   type DeviceRole,
 } from '../../devices/registry';
+import { registerDevice as registerDeviceAuth } from '../../auth/caller_type';
 
 const VALID_ROLES = new Set<string>(['rich', 'thin', 'cli', 'agent']);
 
@@ -31,10 +32,15 @@ export function registerDevicesRoutes(router: CoreRouter): void {
 
     try {
       const device = registerDevice(name, publicKeyMultibase, role as DeviceRole);
+      // Issue #19: also register the DID in the auth caller-type table so
+      // subsequent signed calls (especially agent-pull /v1/workflow/tasks/*)
+      // resolve to the correct caller type instead of 'unknown'.
+      registerDeviceAuth(device.did, device.deviceName);
       return {
         status: 201,
         body: {
           deviceId: device.deviceId,
+          did: device.did,
           deviceName: device.deviceName,
           role: device.role,
         },

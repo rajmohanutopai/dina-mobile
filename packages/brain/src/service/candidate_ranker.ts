@@ -52,6 +52,12 @@ export interface RankedCandidate {
   profile: ServiceProfile;
   /** Distance in km if computable, else `undefined`. */
   distanceKm: number | undefined;
+  /**
+   * AppView's returned position (0-based). Preserved so the ranker
+   * breaks ties using AppView's trust ordering instead of alphabetising
+   * across providers that AppView already ranked differently (issue #13).
+   */
+  appViewIndex: number;
 }
 
 /**
@@ -62,9 +68,12 @@ export interface RankedCandidate {
  * Sort order (stable):
  *   1. isPublic=true (filter — non-public entries are dropped)
  *   2. advertises the requested capability (filter)
- *   3. distanceKm ASC (undefined last)
- *   4. service name ASC (case-insensitive)
- *   5. DID ASC (deterministic final tiebreaker)
+ *   3. distanceKm ASC (undefined last) — only when the viewer supplied
+ *      coordinates; otherwise we fall straight to AppView's order.
+ *   4. AppView's returned order (preserves trust/relevance ranking
+ *      AppView applied — issue #13).
+ *   5. service name ASC (case-insensitive) — final deterministic tiebreak.
+ *   6. DID ASC — ultimate tiebreaker for identical-named providers.
  */
 export function rankCandidates(
   capability: string,
@@ -74,7 +83,7 @@ export function rankCandidates(
   if (capability === '') return [];
 
   const ranked: RankedCandidate[] = [];
-  for (const profile of services) {
+  for (const [index, profile] of services.entries()) {
     if (!profile.isPublic) continue;
     if (!profile.capabilities.includes(capability)) continue;
     if (!profile.did) continue;
@@ -82,6 +91,7 @@ export function rankCandidates(
     ranked.push({
       profile,
       distanceKm: effectiveDistance(profile, options),
+      appViewIndex: index,
     });
   }
 
@@ -144,7 +154,15 @@ function isFiniteLocation(loc: Location): boolean {
 }
 
 function compareCandidates(a: RankedCandidate, b: RankedCandidate): number {
-  // distance: undefined sorts last
+  // AppView's returned order is the PRIMARY key (issue #15 refinement
+  // of #13): the server applied trust/relevance signals we don't have
+  // client-side. Distance only breaks ties within a single AppView
+  // rank — not the other way around.
+  if (a.appViewIndex !== b.appViewIndex) {
+    return a.appViewIndex - b.appViewIndex;
+  }
+
+  // distance: undefined sorts last (within the same AppView rank)
   const aHas = a.distanceKm !== undefined;
   const bHas = b.distanceKm !== undefined;
   if (aHas && !bHas) return -1;

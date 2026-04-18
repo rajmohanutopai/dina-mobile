@@ -18,6 +18,17 @@ import {
   type ServiceConfig,
 } from '../../../core/src/service/service_config';
 import type { WorkflowTask, WorkflowEvent } from '../../../core/src/workflow/domain';
+import {
+  HEALTHZ,
+  SERVICE_CONFIG,
+  SERVICE_QUERY,
+  SERVICE_RESPOND,
+  WORKFLOW_EVENT_ACK,
+  WORKFLOW_EVENT_FAIL,
+  WORKFLOW_EVENTS,
+  WORKFLOW_TASK,
+  WORKFLOW_TASKS,
+} from '../../../core/src/server/routes/paths';
 import { CircuitBreaker, CircuitBreakerOpenError } from './circuit_breaker';
 
 export { CircuitBreakerOpenError };
@@ -233,7 +244,7 @@ export class BrainCoreClient {
    * Source: `GET /v1/service/config` (commit f3a1bc7).
    */
   async getServiceConfig(): Promise<ServiceConfig | null> {
-    const result = await this.signedRequest('GET', '/v1/service/config');
+    const result = await this.signedRequest('GET', SERVICE_CONFIG);
     if (result.status === 404) return null;
     if (result.status !== 200) {
       throw new Error(`getServiceConfig: unexpected status ${result.status}`);
@@ -258,7 +269,7 @@ export class BrainCoreClient {
    * Source: `PUT /v1/service/config` (commit f3a1bc7).
    */
   async putServiceConfig(config: ServiceConfig): Promise<void> {
-    const result = await this.signedRequest('PUT', '/v1/service/config', config);
+    const result = await this.signedRequest('PUT', SERVICE_CONFIG, config);
     if (result.status !== 200) {
       const detail = (result.body as { error?: string })?.error ?? '';
       throw new Error(
@@ -296,7 +307,7 @@ export class BrainCoreClient {
     if (req.serviceName !== undefined) body.service_name = req.serviceName;
     if (req.originChannel !== undefined) body.origin_channel = req.originChannel;
     if (req.schemaHash !== undefined) body.schema_hash = req.schemaHash;
-    const result = await this.signedRequest('POST', '/v1/service/query', body);
+    const result = await this.signedRequest('POST', SERVICE_QUERY, body);
     throwForStatus('sendServiceQuery', result);
     const r = result.body as Record<string, unknown>;
     return {
@@ -321,7 +332,7 @@ export class BrainCoreClient {
       error?: string;
     },
   ): Promise<SendServiceRespondResult> {
-    const result = await this.signedRequest('POST', '/v1/service/respond', {
+    const result = await this.signedRequest('POST', SERVICE_RESPOND, {
       task_id: taskId,
       response_body: responseBody,
     });
@@ -380,7 +391,7 @@ export class BrainCoreClient {
     if (input.policy !== undefined) body.policy = input.policy;
     if (input.initialState !== undefined) body.initial_state = input.initialState;
 
-    const result = await this.signedRequest('POST', '/v1/workflow/tasks', body);
+    const result = await this.signedRequest('POST', WORKFLOW_TASKS, body);
     if (result.status === 409) {
       const r = result.body as { error?: string; code?: string };
       throw new WorkflowConflictError(
@@ -445,7 +456,7 @@ export class BrainCoreClient {
     qs.set('kind', params.kind);
     qs.set('state', params.state);
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
-    const result = await this.signedRequest('GET', `/v1/workflow/tasks?${qs.toString()}`);
+    const result = await this.signedRequest('GET', `${WORKFLOW_TASKS}?${qs.toString()}`);
     throwForStatus('listWorkflowTasks', result);
     const r = result.body as { tasks?: WorkflowTask[] };
     return Array.isArray(r.tasks) ? r.tasks : [];
@@ -455,7 +466,7 @@ export class BrainCoreClient {
   async getWorkflowTask(id: string): Promise<WorkflowTask | null> {
     const result = await this.signedRequest(
       'GET',
-      `/v1/workflow/tasks/${encodeURIComponent(id)}`,
+      WORKFLOW_TASK(encodeURIComponent(id)),
     );
     if (result.status === 404) return null;
     throwForStatus('getWorkflowTask', result);
@@ -471,7 +482,7 @@ export class BrainCoreClient {
   ): Promise<WorkflowTask> {
     const result = await this.signedRequest(
       'POST',
-      `/v1/workflow/tasks/${encodeURIComponent(id)}/${action}`,
+      `${WORKFLOW_TASK(encodeURIComponent(id))}/${action}`,
       body ?? {},
     );
     throwForStatus(`${action}WorkflowTask`, result);
@@ -497,7 +508,7 @@ export class BrainCoreClient {
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
     if (params.needsDeliveryOnly === true) qs.set('needs_delivery', 'true');
     const suffix = qs.toString();
-    const path = suffix === '' ? '/v1/workflow/events' : `/v1/workflow/events?${suffix}`;
+    const path = suffix === '' ? WORKFLOW_EVENTS : `${WORKFLOW_EVENTS}?${suffix}`;
     const result = await this.signedRequest('GET', path);
     throwForStatus('listWorkflowEvents', result);
     const r = result.body as { events?: WorkflowEvent[] };
@@ -511,7 +522,7 @@ export class BrainCoreClient {
   async acknowledgeWorkflowEvent(eventId: number): Promise<boolean> {
     const result = await this.signedRequest(
       'POST',
-      `/v1/workflow/events/${eventId}/ack`,
+      WORKFLOW_EVENT_ACK(eventId),
       {},
     );
     if (result.status === 404) return false;
@@ -519,10 +530,38 @@ export class BrainCoreClient {
     return true;
   }
 
+  /**
+   * POST /v1/workflow/events/:id/fail — consumer negative-ack. Called by
+   * `WorkflowEventConsumer` when a delivery or approved-dispatch attempt
+   * fails; Core pushes `next_delivery_at` out so subsequent
+   * `needs_delivery=true` queries honour backoff instead of hot-looping
+   * on the same failing event (review #6).
+   *
+   * Returns `true` on 200, `false` on 404. The optional `nextDeliveryAt`
+   * lets the consumer suggest a back-off floor; Core defaults to
+   * `now + 30s` when omitted.
+   */
+  async failWorkflowEventDelivery(
+    eventId: number,
+    opts: { nextDeliveryAt?: number; error?: string } = {},
+  ): Promise<boolean> {
+    const body: Record<string, unknown> = {};
+    if (opts.nextDeliveryAt !== undefined) body.next_delivery_at = opts.nextDeliveryAt;
+    if (opts.error !== undefined) body.error = opts.error;
+    const result = await this.signedRequest(
+      'POST',
+      WORKFLOW_EVENT_FAIL(eventId),
+      body,
+    );
+    if (result.status === 404) return false;
+    throwForStatus('failWorkflowEventDelivery', result);
+    return true;
+  }
+
   /** Check if Core is reachable. */
   async isHealthy(): Promise<boolean> {
     try {
-      const result = await this.signedRequest('GET', '/healthz');
+      const result = await this.signedRequest('GET', HEALTHZ);
       return result.status === 200;
     } catch {
       return false;
@@ -565,7 +604,15 @@ export class BrainCoreClient {
     // CoreRouter is synchronous in-memory; a failure here is a handler
     // bug, not a flaky network.
     if (this.signedDispatch !== null) {
-      const authHeaders = signRequest(method, path, '', bodyBytes, this.privateKey, this.did);
+      // Canonical signing requires path + query split apart — the server
+      // reconstructs them as separate fields when building the canonical
+      // payload. Passing the full `path?query` as `path` with empty
+      // `query` produces a mismatched canonical and every signed GET
+      // with a query string fails 401.
+      const [pathOnly, queryString] = splitPathForSigning(path);
+      const authHeaders = signRequest(
+        method, pathOnly, queryString, bodyBytes, this.privateKey, this.did,
+      );
       const headers: Record<string, string> = {
         ...authHeaders,
         'Content-Type': 'application/json',
@@ -586,8 +633,15 @@ export class BrainCoreClient {
     const url = `${this.coreURL}${path}`;
     let lastError: Error | null = null;
 
+    // Split path + query for canonical signing — matches the server
+     // side's AuthRequest construction (path stays path, query is the
+    // kv string without the leading `?`).
+    const [pathOnly, queryString] = splitPathForSigning(path);
+
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      const authHeaders = signRequest(method, path, '', bodyBytes, this.privateKey, this.did);
+      const authHeaders = signRequest(
+        method, pathOnly, queryString, bodyBytes, this.privateKey, this.did,
+      );
 
       const headers: Record<string, string> = {
         ...authHeaders,
@@ -646,4 +700,16 @@ export class BrainCoreClient {
   }
 
   // parseBody and backoff extracted to core/transport/http_retry.ts
+}
+
+/**
+ * Split a `path?query` string into `[path, query]` for canonical
+ * signing. The server reconstructs the canonical payload with path +
+ * query as separate fields, so the signer must do the same or every
+ * signed GET with a query string would fail 401.
+ */
+function splitPathForSigning(full: string): [string, string] {
+  const i = full.indexOf('?');
+  if (i < 0) return [full, ''];
+  return [full.slice(0, i), full.slice(i + 1)];
 }

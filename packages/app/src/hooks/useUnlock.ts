@@ -20,6 +20,12 @@ import { getPublicKey } from '../../../core/src/crypto/ed25519';
 import { deriveRootSigningKey } from '../../../core/src/crypto/slip0010';
 import { deriveDIDKey } from '../../../core/src/identity/did';
 import { openBootPersonas, createPersona, personaExists, listPersonas } from '../../../core/src/persona/service';
+import { loadPersistedDid } from '../services/identity_record';
+import {
+  initializePersistence,
+  openPersonaDB,
+  isPersistenceReady,
+} from '../storage/init';
 
 export type UnlockStep =
   | 'idle'
@@ -42,6 +48,26 @@ export interface UnlockState {
 
 /** Current unlock state. */
 let state: UnlockState = createInitialState();
+
+/**
+ * Listeners notified whenever `state` transitions. Used by React hooks
+ * that gate boot on `isUnlocked()` — without this, the layout can only
+ * read a snapshot at mount and relies on a navigation remount to pick up
+ * the unlock (issue #12).
+ */
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const l of listeners) {
+    try { l(); } catch { /* swallow — subscribers mustn't block notify */ }
+  }
+}
+
+/** Subscribe to unlock-state transitions. Returns an unsubscribe fn. */
+export function subscribeToUnlockState(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
 
 function createInitialState(): UnlockState {
   return {
@@ -87,11 +113,18 @@ export async function unlock(
     return fail('Wrong passphrase');
   }
 
-  // 3. Derive signing key and DID
+  // 3. Derive signing key + DID.
+  //    Identity precedence matches the runtime composer (review #14):
+  //      - a persisted did:plc from onboarding wins outright,
+  //      - otherwise we derive a did:key from the freshly-unwrapped
+  //        seed so the screen and the booted node agree.
+  //    Without this the unlock screen used to show a did:key while
+  //    the runtime ran under the persisted did:plc.
   state.step = 'deriving_keys';
   const rootKey = deriveRootSigningKey(masterSeed, 0);
   const pubKey = getPublicKey(rootKey.privateKey);
-  const did = deriveDIDKey(pubKey);
+  const persistedDid = await loadPersistedDid();
+  const did = persistedDid ?? deriveDIDKey(pubKey);
   state.did = did;
 
   // 4. Ensure general persona exists
@@ -99,14 +132,48 @@ export async function unlock(
     createPersona('general', 'default', 'Default persona');
   }
 
+  // 4a. Wire durable persistence (review #10) — without this the
+  //     runtime boot falls back to in-memory workflow + service-config
+  //     repos and all tasks / approvals vanish on app restart. The
+  //     masterSeed + userSalt drive the per-persona DEK derivation in
+  //     ProductionDBProvider. Only initialize once per process.
+  if (!isPersistenceReady()) {
+    try {
+      await initializePersistence(masterSeed, wrappedSeed.salt);
+    } catch (err) {
+      // Persistence bring-up is best-effort from the unlock path: a
+      // native-module failure (e.g. op-sqlite not installed in tests)
+      // shouldn't brick unlock. The boot service's in-memory fallback
+      // will fire with `persistence.in_memory` so the banner makes it
+      // visible.
+      // eslint-disable-next-line no-console
+      console.warn('[unlock] persistence init failed:', err);
+    }
+  }
+
   // 5. Open boot personas (default + standard auto-open)
   state.step = 'opening_vaults';
   const opened = openBootPersonas();
   state.openedPersonas = opened;
 
+  // 5a. Wire persona-vault repos for every persona the unlock
+  //     opened — `openPersonaDB` is a no-op when persistence init
+  //     failed above.
+  if (isPersistenceReady()) {
+    for (const persona of opened) {
+      try {
+        openPersonaDB(persona);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[unlock] openPersonaDB failed for "${persona}":`, err);
+      }
+    }
+  }
+
   // 6. Complete
   state.step = 'complete';
   state.completedAt = Date.now();
+  notify();
 
   return { ...state };
 }
@@ -170,6 +237,7 @@ export function getUnlockDuration(): number | null {
  */
 export function resetUnlockState(): void {
   state = createInitialState();
+  notify();
 }
 
 /** Set failed state with error. */
@@ -177,5 +245,24 @@ function fail(error: string): UnlockState {
   state.step = 'failed';
   state.error = error;
   state.completedAt = Date.now();
+  notify();
   return { ...state };
+}
+
+/**
+ * React hook — returns a live `isUnlocked()` boolean that re-renders when
+ * the module-level unlock state transitions. Use this instead of the
+ * snapshot `isUnlocked()` in render paths so the tree picks up the
+ * unlock without waiting for a navigation remount.
+ */
+export function useIsUnlocked(): boolean {
+  // Lazy-require React so the module itself stays test-friendly outside
+  // a React runtime.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useSyncExternalStore } = require('react') as typeof import('react');
+  return useSyncExternalStore(
+    subscribeToUnlockState,
+    isUnlocked,
+    isUnlocked,
+  );
 }

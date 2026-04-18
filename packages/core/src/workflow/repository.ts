@@ -206,10 +206,24 @@ export interface WorkflowRepository {
 
   /**
    * List events awaiting delivery (needs_delivery=true) whose
-   * `next_delivery_at` is due. Ordered by `at` ASC so older events are
-   * delivered first.
+   * `next_delivery_at` is due (<= nowMs) AND whose `at >= sinceMs`.
+   * Ordered by `at` ASC so older events are delivered first.
+   *
+   * Passing `sinceMs: 0` returns every due undelivered event; higher
+   * values let the delivery scheduler page from a known cursor
+   * instead of post-filtering (review #7: post-filtering hid recent
+   * events behind older undelivered ones when the batch exceeded
+   * the limit).
    */
-  listUndeliveredEvents(nowMs: number, limit: number): WorkflowEvent[];
+  listUndeliveredEvents(nowMs: number, sinceMs: number, limit: number): WorkflowEvent[];
+
+  /**
+   * List ALL events (delivered + undelivered) since `sinceMs`. Ordered
+   * by `at` ASC; capped at `limit`. Used by the diagnostics-oriented
+   * `/v1/workflow/events?needs_delivery=false` surface where the
+   * delivery scheduler's hot-path filter would hide history (issue #18).
+   */
+  listAllEventsSince(sinceMs: number, limit: number): WorkflowEvent[];
 
   /** Mark an event as delivered at `nowMs`. Clears `needs_delivery`. */
   markEventDelivered(eventId: number, nowMs: number): boolean;
@@ -480,13 +494,28 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     nowSec: number,
   ): boolean {
     const nowMs = nowSec * 1000;
+    // Claim both `queued` (operator-approved) AND `pending_approval`
+    // (operator not yet approved). The pending_approval path is used by
+    // `/service_deny` + the expiry reconciler to push an "unavailable"
+    // response to the requester before the task is cancelled/failed.
+    // Issue #10.
+    //
+    // Review #3: extend from `max(now, expires_at)`, NOT from the
+    // stale `expires_at`. Previously an already-expired task would be
+    // moved to `running` but keep an expires_at that was ALREADY in
+    // the past (old_expires_at + extend might still be < now), which
+    // raced badly with the expiry sweeper — the task flipped to
+    // running and then the next sweep expired it out from under the
+    // executor. SQLite's MAX(nowSec, expires_at) returns a sane
+    // floor; nulls collapse to nowSec via COALESCE.
     const affected = this.db.run(
       `UPDATE workflow_tasks
        SET state = 'running',
-           expires_at = COALESCE(expires_at, ?) + ?,
+           expires_at = MAX(COALESCE(expires_at, ?), ?) + ?,
            updated_at = ?
-       WHERE id = ? AND kind = 'approval' AND state = 'queued'`,
-      [nowSec, extendSec, nowMs, id],
+       WHERE id = ? AND kind = 'approval'
+         AND state IN ('queued','pending_approval')`,
+      [nowSec, nowSec, extendSec, nowMs, id],
     );
     return affected > 0;
   }
@@ -746,18 +775,50 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
            AND expires_at <= ?`,
         [nowMs, nowSec],
       );
+      // Emit a `failed` workflow_event per expired task so downstream
+      // consumers (WorkflowEventConsumer → chat formatter) can surface
+      // the timeout to the user. Without this, TTL expiry is invisible
+      // at the chat surface. Issue #10.
+      for (const t of candidates) {
+        this.appendEvent({
+          task_id: t.id,
+          at: nowMs,
+          event_kind: 'failed',
+          needs_delivery: true,
+          delivery_attempts: 0,
+          delivery_failed: false,
+          details: JSON.stringify({
+            response_status: 'expired',
+            capability: inferCapability(t),
+            service_name: inferServiceName(t),
+            error: 'expired',
+          }),
+        });
+      }
     });
     return candidates;
   }
 
-  listUndeliveredEvents(nowMs: number, limit: number): WorkflowEvent[] {
+  listUndeliveredEvents(nowMs: number, sinceMs: number, limit: number): WorkflowEvent[] {
     const rows = this.db.query(
       `SELECT ${EVENT_COLUMNS} FROM workflow_events
        WHERE needs_delivery = 1
          AND (next_delivery_at IS NULL OR next_delivery_at <= ?)
+         AND at >= ?
        ORDER BY at ASC
        LIMIT ?`,
-      [nowMs, limit],
+      [nowMs, sinceMs, limit],
+    );
+    return rows.map(rowToEvent);
+  }
+
+  listAllEventsSince(sinceMs: number, limit: number): WorkflowEvent[] {
+    const rows = this.db.query(
+      `SELECT ${EVENT_COLUMNS} FROM workflow_events
+       WHERE at >= ?
+       ORDER BY at ASC
+       LIMIT ?`,
+      [sinceMs, limit],
     );
     return rows.map(rowToEvent);
   }
@@ -969,9 +1030,21 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
   ): boolean {
     const t = this.tasks.get(id);
     if (t === undefined) return false;
-    if (t.kind !== 'approval' || t.status !== 'queued') return false;
+    // Parity with SQLiteWorkflowRepository.claimApprovalForExecution —
+    // accept both `queued` and `pending_approval` so the deny/expiry
+    // paths can claim the approval task for its unavailable response.
+    if (
+      t.kind !== 'approval' ||
+      (t.status !== 'queued' && t.status !== 'pending_approval')
+    ) {
+      return false;
+    }
     t.status = 'running';
-    const base = t.expires_at ?? nowSec;
+    // Review #3: extend from `max(now, expires_at)` so an already-
+    // expired task doesn't keep its stale past expiry. Without this
+    // floor, the expiry sweeper could re-expire the task immediately
+    // after claim because `old_expires_at + extend` is still < now.
+    const base = Math.max(t.expires_at ?? nowSec, nowSec);
     t.expires_at = base + extendSec;
     t.updated_at = nowSec * 1000;
     return true;
@@ -1166,22 +1239,48 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
         t.status = 'failed';
         t.error = 'expired';
         t.updated_at = nowMs;
+        // Parity with SQLiteWorkflowRepository — emit a deliverable
+        // `failed` event so consumers can surface the TTL expiry to
+        // chat. Issue #10.
+        this.appendEvent({
+          task_id: t.id,
+          at: nowMs,
+          event_kind: 'failed',
+          needs_delivery: true,
+          delivery_attempts: 0,
+          delivery_failed: false,
+          details: JSON.stringify({
+            response_status: 'expired',
+            capability: inferCapability(t),
+            service_name: inferServiceName(t),
+            error: 'expired',
+          }),
+        });
       }
     }
     return expired;
   }
 
-  listUndeliveredEvents(nowMs: number, limit: number): WorkflowEvent[] {
+  listUndeliveredEvents(nowMs: number, sinceMs: number, limit: number): WorkflowEvent[] {
     const out = this.events
       .filter(
         (e) =>
           e.needs_delivery &&
-          (e.next_delivery_at === undefined || e.next_delivery_at <= nowMs),
+          (e.next_delivery_at === undefined || e.next_delivery_at <= nowMs) &&
+          e.at >= sinceMs,
       )
       .sort((a, b) => a.at - b.at)
       .slice(0, limit)
       .map((e) => ({ ...e }));
     return out;
+  }
+
+  listAllEventsSince(sinceMs: number, limit: number): WorkflowEvent[] {
+    return this.events
+      .filter((e) => e.at >= sinceMs)
+      .sort((a, b) => a.at - b.at)
+      .slice(0, limit)
+      .map((e) => ({ ...e }));
   }
 
   markEventDelivered(eventId: number, nowMs: number): boolean {
@@ -1311,6 +1410,36 @@ function matchPayloadTuple(
     `findServiceQueryTask: >1 live match for queryId=${queryId} peer=${peerDID} capability=${capability}`,
     'duplicate_correlation',
   );
+}
+
+/**
+ * Pull `capability` out of a workflow_task's persisted payload JSON.
+ * Returns empty string when the payload is missing, malformed, or does
+ * not include a capability field. Used to populate workflow_event
+ * details for expiry fan-out (issue #10).
+ */
+function inferCapability(task: WorkflowTask): string {
+  if (!task.payload) return '';
+  try {
+    const p = JSON.parse(task.payload) as { capability?: unknown };
+    return typeof p.capability === 'string' ? p.capability : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Pull `service_name` out of the payload JSON. Same contract as
+ * inferCapability — empty string on any parse failure.
+ */
+function inferServiceName(task: WorkflowTask): string {
+  if (!task.payload) return '';
+  try {
+    const p = JSON.parse(task.payload) as { service_name?: unknown };
+    return typeof p.service_name === 'string' ? p.service_name : '';
+  } catch {
+    return '';
+  }
 }
 
 function optionalStr(v: string | undefined): string | null {

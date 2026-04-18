@@ -131,28 +131,54 @@ export interface ChatResponse {
   requestId?: string;
 }
 
-// Selected provider state
-let activeProvider: ProviderType | null = null;
+// The legacy module-level `activeProvider` state used to live here.
+// It's been consolidated into `active_provider.ts` — the single
+// persistent store that Settings, brain_wiring, and buildBootInputs
+// all read from (review finding #16). We keep thin compat shims so
+// callers that only need the synchronous setter/getter (chat tests,
+// legacy processMessage) keep working against the same source of
+// truth.
+import {
+  peekActiveProvider,
+  saveActiveProvider,
+  loadActiveProvider,
+} from './active_provider';
+
 let activeModelId: string | null = null;
 
-export function setActiveProvider(provider: ProviderType | null, modelId?: string): void {
-  activeProvider = provider;
+/**
+ * Synchronous setter — fires the persisted store asynchronously but
+ * updates the in-memory cache before returning, so follow-up
+ * `getActiveProvider()` reads see the new value. Tests that only
+ * need the in-memory state can `void` the returned promise.
+ */
+export function setActiveProvider(
+  provider: ProviderType | null,
+  modelId?: string,
+): void {
   activeModelId = modelId ?? null;
+  // Fire-and-forget the keychain write. `saveActiveProvider` updates
+  // the cache synchronously via its in-module assignment, so
+  // `peekActiveProvider` returns the right thing immediately.
+  void saveActiveProvider(provider);
 }
 
 export function getActiveProvider(): ProviderType | null {
-  return activeProvider;
+  return peekActiveProvider();
 }
 
-/** Auto-select the first configured provider if none is active. */
+/**
+ * Auto-select the first configured provider if none is active. Reads
+ * the durable store first; falls back to keychain-order when nothing
+ * has been persisted.
+ */
 export async function autoSelectProvider(): Promise<ProviderType | null> {
-  if (activeProvider) {
-    return activeProvider;
-  }
+  const persisted = await loadActiveProvider();
+  if (persisted !== null) return persisted;
   const configured = await getConfiguredProviders();
   if (configured.length > 0) {
-    activeProvider = configured[0];
-    return activeProvider;
+    await saveActiveProvider(configured[0]);
+    return configured[0];
   }
   return null;
 }
@@ -328,7 +354,7 @@ async function handleAsk(query: string): Promise<ChatResponse> {
       const result = await reason({
         query,
         persona: 'general',
-        provider: activeProvider ?? 'none',
+        provider: peekActiveProvider() ?? 'none',
       });
 
       return {
@@ -399,7 +425,7 @@ async function handleChat(text: string): Promise<ChatResponse> {
     const result = await reason({
       query: text,
       persona: 'general',
-      provider: activeProvider ?? 'none',
+      provider: peekActiveProvider() ?? 'none',
     });
 
     return {

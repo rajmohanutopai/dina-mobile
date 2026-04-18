@@ -23,7 +23,26 @@ export interface AppViewStubOptions {
   profiles?: ServiceProfile[];
 }
 
+/**
+ * Brand symbol for identifying AppViewStub instances after minification.
+ * Previously boot_service detected the stub via `constructor.name ===
+ * 'AppViewStub'`, which is brittle under bundling — a Metro release
+ * build can rename the class and silently defeat demo-mode detection
+ * (review #20). A Symbol reference is stable across any bundling step.
+ */
+export const APPVIEW_STUB_BRAND = Symbol.for('dina.appview_stub');
+
+export function isAppViewStub(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (value as { readonly [APPVIEW_STUB_BRAND]?: true })[APPVIEW_STUB_BRAND] === true
+  );
+}
+
 export class AppViewStub {
+  /** See `APPVIEW_STUB_BRAND` — used by `isAppViewStub()` detection. */
+  readonly [APPVIEW_STUB_BRAND]: true = true;
   private readonly profiles = new Map<string, ServiceProfile>();
 
   constructor(options: AppViewStubOptions = {}) {

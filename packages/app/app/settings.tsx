@@ -16,9 +16,30 @@ import {
   PROVIDERS, saveApiKey, getApiKey, removeApiKey, maskKey,
   validateKeyFormat, getConfiguredProviders,
 } from '../src/ai/provider';
-import { setActiveProvider, getActiveProvider } from '../src/ai/chat';
-import { getMemoryCount } from '../src/ai/memory';
+import {
+  loadActiveProvider, saveActiveProvider, peekActiveProvider,
+} from '../src/ai/active_provider';
+import { wireBrainChatProvider } from '../src/ai/brain_wiring';
+import {
+  getBootedNode,
+  getBootDegradations,
+} from '../src/hooks/useNodeBootstrap';
 import type { ProviderType } from '../src/ai/provider';
+
+/**
+ * Mirror of the provider-blocker set in `_layout.tsx`. Kept local to
+ * avoid a circular import; out-of-sync entries are caught by the
+ * review process rather than runtime. Reviews #7, #8, #17 — the
+ * canonical list lives in `_layout.tsx`, keep these in sync.
+ */
+const PROVIDER_BLOCKERS: ReadonlySet<string> = new Set([
+  'publisher.stub',
+  'transport.msgbox.missing',
+  'identity.did_key',
+  'execution.no_runner',
+  'persistence.in_memory',
+  'transport.sendd2d.noop',
+]);
 
 interface ProviderState {
   configured: boolean;
@@ -35,8 +56,7 @@ export default function SettingsScreen() {
   const [editingProvider, setEditingProvider] = useState<ProviderType | null>(null);
   const [keyInput, setKeyInput] = useState('');
   const [saving, setSaving] = useState(false);
-  const [active, setActive] = useState<ProviderType | null>(getActiveProvider());
-  const memoryCount = getMemoryCount();
+  const [active, setActive] = useState<ProviderType | null>(peekActiveProvider());
 
   const loadStates = useCallback(async () => {
     const states: Record<string, ProviderState> = {};
@@ -50,13 +70,37 @@ export default function SettingsScreen() {
     }
     setProviderStates(states as Record<ProviderType, ProviderState>);
 
-    // Auto-select if none active
-    if (!active) {
-      const configured = await getConfiguredProviders();
-      if (configured.length > 0) {
-        setActive(configured[0]);
-        setActiveProvider(configured[0]);
-      }
+    // Durable-first: if the user has previously selected a provider
+    // AND its API key is still configured, honour it. If the key is
+    // gone (manual keychain reset, provider removed elsewhere), fall
+    // through to re-select the first configured one — review #10.
+    // Without this fallback, Settings would happily wire a provider
+    // that has no usable credential, and the next /ask call would
+    // blow up at the cloud boundary.
+    const configured = await getConfiguredProviders();
+    const persisted = await loadActiveProvider();
+    if (persisted !== null && configured.includes(persisted)) {
+      if (active !== persisted) setActive(persisted);
+      await wireBrainChatProvider(persisted);
+      return;
+    }
+    // Either nothing persisted OR the persisted provider's key is gone.
+    // Clear the stale selection and re-pick from what's actually
+    // configured right now.
+    if (persisted !== null && !configured.includes(persisted)) {
+      await saveActiveProvider(null);
+    }
+    if (configured.length > 0) {
+      setActive(configured[0]);
+      await saveActiveProvider(configured[0]);
+      // Mirror into the live chat path so the Brain orchestrator
+      // actually uses the provider for `/ask` + chat reasoning
+      // (issue #2).
+      await wireBrainChatProvider(configured[0]);
+    } else {
+      // No configured providers at all — clear any stale wiring.
+      setActive(null);
+      await wireBrainChatProvider(null);
     }
   }, [active]);
 
@@ -72,7 +116,8 @@ export default function SettingsScreen() {
     setSaving(true);
     try {
       await saveApiKey(provider, keyInput.trim());
-      setActiveProvider(provider);
+      await saveActiveProvider(provider);
+      await wireBrainChatProvider(provider);
       setActive(provider);
       setKeyInput('');
       setEditingProvider(null);
@@ -96,7 +141,8 @@ export default function SettingsScreen() {
           onPress: async () => {
             await removeApiKey(provider);
             if (active === provider) {
-              setActiveProvider(null);
+              await saveActiveProvider(null);
+              await wireBrainChatProvider(null);
               setActive(null);
             }
             await loadStates();
@@ -107,7 +153,8 @@ export default function SettingsScreen() {
   };
 
   const handleSelectActive = async (provider: ProviderType) => {
-    setActiveProvider(provider);
+    await saveActiveProvider(provider);
+    await wireBrainChatProvider(provider);
     setActive(provider);
   };
 
@@ -219,18 +266,31 @@ export default function SettingsScreen() {
         })}
       </View>
 
-      {/* Service sharing — drill-down to the service-settings screen */}
-      <SettingsSection title="SERVICE SHARING">
-        <TouchableOpacity
-          style={styles.row}
-          onPress={() => router.push('/service-settings')}
-          accessibilityRole="button"
-          accessibilityLabel="Open Service Sharing settings"
-        >
-          <Text style={styles.rowLabel}>Configure service profile</Text>
-          <Text style={styles.rowValue}>{'\u203A'}</Text>
-        </TouchableOpacity>
-      </SettingsSection>
+      {/* Service sharing — drill-down to the service-settings screen.
+          Hidden entirely when the node isn't running as a provider or
+          is blocked from being one (review #17). Without this, the
+          link opens a screen that can save state the runtime will
+          never honour. */}
+      {(() => {
+        const node = getBootedNode();
+        const runningAsProvider =
+          node !== null && (node.role === 'provider' || node.role === 'both');
+        const blocked = getBootDegradations().some((d) => PROVIDER_BLOCKERS.has(d.code));
+        if (!runningAsProvider || blocked) return null;
+        return (
+          <SettingsSection title="SERVICE SHARING">
+            <TouchableOpacity
+              style={styles.row}
+              onPress={() => router.push('/service-settings')}
+              accessibilityRole="button"
+              accessibilityLabel="Open Service Sharing settings"
+            >
+              <Text style={styles.rowLabel}>Configure service profile</Text>
+              <Text style={styles.rowValue}>{'\u203A'}</Text>
+            </TouchableOpacity>
+          </SettingsSection>
+        );
+      })()}
 
       {/* Security */}
       <SettingsSection title="SECURITY">
@@ -239,9 +299,12 @@ export default function SettingsScreen() {
         <SettingsRow label="Key storage" value="Device Keychain" />
       </SettingsSection>
 
-      {/* Stats */}
+      {/* Stats — the legacy in-memory memory counter was removed; the
+          real vault/staging count lives in Core and surfaces via the
+          Vault tab once the Core-side "list items" endpoint is wired.
+          Showing a misleading zero in the meantime is worse than
+          showing nothing (issue #16). */}
       <SettingsSection title="DATA">
-        <SettingsRow label="Memories" value={`${memoryCount}`} />
         <SettingsRow label="Storage" value="On device only" />
       </SettingsSection>
 

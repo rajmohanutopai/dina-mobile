@@ -100,12 +100,37 @@ export function wireServiceOrchestrator(
 // Helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
+/**
+ * Default payload → IssueQueryRequest builder.
+ *
+ * For ad-hoc text (`/service eta_query castro bus`) wraps as
+ * `{text: payload}` — matches the original single-arg contract.
+ *
+ * For structured capabilities (`/service eta_query {...json...}`) the
+ * operator can pass a JSON object and we forward it verbatim. This
+ * covers issue #17 — capabilities like eta_query with a typed schema
+ * can actually be invoked from the slash-command surface without a
+ * custom adapter.
+ */
 function defaultBuildRequest(capability: string, payload: string): IssueQueryRequest {
-  return {
-    capability,
-    params: payload === '' ? {} : { text: payload },
-    originChannel: 'chat',
-  };
+  const trimmed = payload.trim();
+  if (trimmed === '') {
+    return { capability, params: {}, originChannel: 'chat' };
+  }
+  // Only attempt JSON parse when the payload looks like it:
+  // starts with `{` and ends with `}`. Otherwise every free-text
+  // operator input would incur a parse failure log.
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { capability, params: parsed, originChannel: 'chat' };
+      }
+    } catch {
+      // Fall through to text fallback — JSON-looking but not JSON.
+    }
+  }
+  return { capability, params: { text: trimmed }, originChannel: 'chat' };
 }
 
 function defaultFormatAck(result: {

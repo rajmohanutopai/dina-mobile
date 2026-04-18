@@ -53,6 +53,27 @@ export type ApprovalNotifier = (notice: {
   approveCommand: string;
 }) => void | Promise<void>;
 
+/**
+ * Callback that sends an ad-hoc `service.response` D2D envelope. Used by
+ * `ServiceHandler.sendError` when a query fails BEFORE any workflow
+ * task exists (unknown capability, schema mismatch, bad params). Issue
+ * #9 — without this, requesters sit waiting until their TTL expires.
+ *
+ * The callback is expected to sign + seal + relay to `recipientDID`.
+ * In production it wraps Core's `sendD2D` with the service.response
+ * type bound. Tests pass a spy.
+ */
+export type ServiceRejectResponder = (
+  recipientDID: string,
+  body: {
+    query_id: string;
+    capability: string;
+    status: 'unavailable' | 'error';
+    error: string;
+    ttl_seconds: number;
+  },
+) => Promise<void>;
+
 export interface ServiceHandlerOptions {
   coreClient: ServiceHandlerCoreClient;
   /**
@@ -66,6 +87,13 @@ export interface ServiceHandlerOptions {
    * chat / push notifications. No-op when absent.
    */
   notifier?: ApprovalNotifier;
+  /**
+   * Optional: sends a `service.response` D2D when the handler rejects
+   * an inbound query before a workflow task is created. When absent the
+   * handler only logs the rejection; the requester waits out its TTL.
+   * Supplying this closes the loop with an immediate error notification.
+   */
+  rejectResponder?: ServiceRejectResponder;
   /** Structured log sink. Defaults to no-op. */
   logger?: (entry: Record<string, unknown>) => void;
   /** Wall-clock source (seconds). Defaults to `Math.floor(Date.now()/1000)`. */
@@ -81,6 +109,7 @@ export class ServiceHandler {
   private readonly core: ServiceHandlerCoreClient;
   private readonly readConfig: () => ServiceConfig | null;
   private readonly notifier: ApprovalNotifier | null;
+  private readonly rejectResponder: ServiceRejectResponder | null;
   private readonly log: (entry: Record<string, unknown>) => void;
   private readonly nowSecFn: () => number;
   private readonly generateUUID: () => string;
@@ -91,6 +120,7 @@ export class ServiceHandler {
     this.core = options.coreClient;
     this.readConfig = options.readConfig;
     this.notifier = options.notifier ?? null;
+    this.rejectResponder = options.rejectResponder ?? null;
     this.log = options.logger ?? (() => { /* no-op */ });
     this.nowSecFn = options.nowSecFn ?? (() => Math.floor(Date.now() / 1000));
     this.generateUUID =
@@ -125,19 +155,19 @@ export class ServiceHandler {
     const config = this.readConfig();
     const cap = findCapabilityConfig(config, query.capability);
     if (cap === null) {
-      await this.sendError(query, 'unavailable', 'capability_not_configured');
+      await this.sendError(fromDID, query, 'unavailable', 'capability_not_configured');
       return;
     }
 
     const schemaErr = this.checkSchemaHash(config, query);
     if (schemaErr !== null) {
-      await this.sendError(query, 'error', schemaErr);
+      await this.sendError(fromDID, query, 'error', schemaErr);
       return;
     }
 
     const paramsErr = this.validateParams(query);
     if (paramsErr !== null) {
-      await this.sendError(query, 'error', paramsErr);
+      await this.sendError(fromDID, query, 'error', paramsErr);
       return;
     }
 
@@ -341,22 +371,43 @@ export class ServiceHandler {
   }
 
   private async sendError(
+    fromDID: string,
     query: ServiceQueryBody,
     status: 'unavailable' | 'error',
     message: string,
   ): Promise<void> {
-    // There's no workflow task yet (handleQuery bails before create), so
-    // we can't use `sendServiceRespond` (which requires a task_id). The
-    // requester's TTL eventually expires; for now we audit-log and move on.
-    // A future enhancement (CORE-P2-G extension) would expose an
-    // anonymous "error response" endpoint that doesn't require a task.
+    // No workflow task exists yet (handleQuery rejected pre-create), so
+    // we can't use `sendServiceRespond` which routes through the
+    // delegation-lifecycle endpoint. Instead, send a task-less D2D
+    // envelope via the injected `rejectResponder`. Issue #9.
     this.log({
       event: 'service.query.rejected',
+      from: fromDID,
       query_id: query.query_id,
       capability: query.capability,
       status,
       message,
     });
+    if (this.rejectResponder === null) return;
+    try {
+      await this.rejectResponder(fromDID, {
+        query_id: query.query_id,
+        capability: query.capability,
+        status,
+        error: message,
+        ttl_seconds: query.ttl_seconds,
+      });
+    } catch (err) {
+      // The response is best-effort. Log the failure so operators see
+      // stuck rejections but never throw — handleQuery contract
+      // guarantees no throw on the inbound dispatch path.
+      this.log({
+        event: 'service.query.reject_send_failed',
+        from: fromDID,
+        query_id: query.query_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private checkSchemaHash(

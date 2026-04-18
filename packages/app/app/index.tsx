@@ -15,29 +15,18 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, spacing, radius, shadows } from '../src/theme';
-import { processMessage } from '../src/ai/chat';
-import { getMemoryCount } from '../src/ai/memory';
+import { useLiveThread } from '../src/hooks/useChatThread';
+import type { ChatMessage } from '../../brain/src/chat/thread';
 
-// In-app chat state
-interface Message {
-  id: string;
-  type: 'user' | 'dina' | 'system';
-  content: string;
-  timestamp: number;
-}
+// Render message shape used by the screen's bubble logic. The chat UI
+// treats Brain's MessageType union as three display buckets: user text,
+// Dina reply, everything-else-system (error/approval/nudge/briefing).
+type UiMessage = ChatMessage & { displayType: 'user' | 'dina' | 'system' };
 
-let messageCounter = 0;
-const chatHistory: Message[] = [];
-
-function addMessage(type: Message['type'], content: string): Message {
-  const msg: Message = {
-    id: `msg-${++messageCounter}`,
-    type,
-    content,
-    timestamp: Date.now(),
-  };
-  chatHistory.push(msg);
-  return msg;
+function toDisplayType(m: ChatMessage): 'user' | 'dina' | 'system' {
+  if (m.type === 'user') return 'user';
+  if (m.type === 'dina') return 'dina';
+  return 'system';
 }
 
 // Action definitions for CTAs
@@ -59,43 +48,44 @@ const ACTIONS = [
 ] as const;
 
 export default function ChatScreen() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Live-subscribed view of the Brain thread store. Issue #1 + #2:
+  // - `send` routes through `handleChat` → uses the installed /ask,
+  //   /service, /service_approve, /service_deny command handlers.
+  // - `messages` re-renders on every thread write, including async
+  //   arrivals from `WorkflowEventConsumer.deliver` (Bus 42 replies).
+  const { messages: threadMessages, send, sending } = useLiveThread('main');
   const [inputText, setInputText] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
   const [activeAction, setActiveAction] = useState<typeof ACTIONS[number] | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const inputRef = useRef<TextInput>(null);
   const prevInputLen = useRef(0);
+
+  // Map Brain's MessageType (user/dina/approval/nudge/briefing/system/error)
+  // onto the three display buckets the bubble renderer knows.
+  const messages: UiMessage[] = threadMessages.map((m) => ({
+    ...m,
+    displayType: toDisplayType(m),
+  }));
+  const isTyping = sending;
 
   const sendMessage = useCallback(async (overrideText?: string) => {
     const raw = overrideText ?? inputText;
     const content = raw.trim();
     if (!content && !overrideText) return;
 
-    // Build the full command: prefix + user content
+    // Build the full command: prefix + user content. handleChat recognises
+    // /remember, /ask, /service, /service_approve, /service_deny, /help.
     const fullText = activeAction ? `${activeAction.prefix}${content}` : content;
 
     setInputText('');
     setActiveAction(null);
 
-    // Add user message (store raw content + action for display)
-    const msg = addMessage('user', fullText);
-    setMessages([...chatHistory]);
-
-    // Show typing indicator
-    setIsTyping(true);
-
-    // Process through AI service
-    const response = await processMessage(fullText);
-    addMessage('dina', response.text);
-
-    setIsTyping(false);
-    setMessages([...chatHistory]);
+    await send(fullText);
 
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
     }, 100);
-  }, [inputText, activeAction]);
+  }, [inputText, activeAction, send]);
 
   const handleAction = useCallback((action: typeof ACTIONS[number]) => {
     setActiveAction(action);
@@ -123,9 +113,9 @@ export default function ChatScreen() {
     setInputText('');
   }, []);
 
-  const renderMessage = useCallback(({ item }: { item: Message }) => {
-    const isUser = item.type === 'user';
-    const isSystem = item.type === 'system';
+  const renderMessage = useCallback(({ item }: { item: UiMessage }) => {
+    const isUser = item.displayType === 'user';
+    const isSystem = item.displayType === 'system';
 
     // Parse action chip from user messages
     let chipLabel: string | null = null;
@@ -173,8 +163,6 @@ export default function ChatScreen() {
       </View>
     );
   }, []);
-
-  const memoryCount = getMemoryCount();
 
   return (
     <KeyboardAvoidingView
@@ -307,13 +295,11 @@ export default function ChatScreen() {
                 Ask
               </Text>
             </TouchableOpacity>
-            {memoryCount > 0 && (
-              <View style={styles.chipInfo}>
-                <Text style={styles.chipInfoText}>
-                  {memoryCount} {memoryCount === 1 ? 'memory' : 'memories'}
-                </Text>
-              </View>
-            )}
+            {/* Legacy in-memory count chip removed: /remember writes
+                to Brain's staging pipeline now, which this counter
+                didn't observe. The real vault count surfaces via the
+                Vault tab once the Core-side list-items endpoint lands
+                (issue #16). */}
           </ScrollView>
         </View>
       )}

@@ -84,6 +84,12 @@ function stubCore(init?: Partial<StubState>): {
       if (state.getError !== null) throw state.getError;
       return state.tasks.get(id) ?? null;
     },
+    async failWorkflowEventDelivery(_eventId: number) {
+      // Test fixture no-op: the consumer calls this on delivery
+      // failure; individual tests that need to assert on it can
+      // override via the `init` block.
+      return true;
+    },
   };
   return { client, state };
 }
@@ -265,12 +271,17 @@ describe('WorkflowEventConsumer.runTick', () => {
     expect(captured).toBe('Night Owl — service unavailable.');
   });
 
-  it('skips and acks non-completed events (approval / failed)', async () => {
+  it('delivers failed events on service_query tasks + skips approved (no onApproved installed)', async () => {
+    // Issue #11: failed events (TTL expiry, provider reject) now route
+    // through the formatter so the user actually sees the outcome.
+    // Approved events still skip when no onApproved dispatcher is wired.
+    const task = svcQueryTask('svc-q-1');
     const { client, state } = stubCore({
       listResult: [
-        completedEvent({ event_id: 10, event_kind: 'failed' }),
+        completedEvent({ event_id: 10, event_kind: 'failed', task_id: 'svc-q-1' }),
         completedEvent({ event_id: 11, event_kind: 'approved' }),
       ],
+      tasks: new Map([['svc-q-1', task]]),
     });
     const delivered: string[] = [];
     const c = new WorkflowEventConsumer({
@@ -278,11 +289,13 @@ describe('WorkflowEventConsumer.runTick', () => {
       deliver: ({ text }) => { delivered.push(text); },
     });
     const result = await c.runTick();
-    expect(result.skipped).toBe(2);
-    expect(result.delivered).toBe(0);
-    expect(delivered).toHaveLength(0);
-    expect(state.ackCalls).toEqual([10, 11]);
-    expect(state.getCalls).toHaveLength(0);
+    expect(result.delivered).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(delivered).toHaveLength(1);
+    // Both events still acked (delivered event 10, skipped event 11).
+    expect(state.ackCalls.sort()).toEqual([10, 11]);
+    // The failed event fetched the task; the skipped approved did not.
+    expect(state.getCalls).toEqual(['svc-q-1']);
   });
 
   it('skips and acks completed events on non-service_query tasks (approval / delegation)', async () => {
@@ -428,14 +441,18 @@ describe('WorkflowEventConsumer.runTick', () => {
     expect(state.ackCalls).toEqual([1, 3]);
   });
 
-  it('fires onTaskOutcome per event (delivered / skipped / failed)', async () => {
-    const task = svcQueryTask('svc-q-1');
+  it('fires onTaskOutcome per event (delivered / skipped)', async () => {
+    // After issue #11: `failed` events on service_query tasks now
+    // deliver instead of skipping. Use a non-service_query failed event
+    // (kind='delegation') to exercise the skip path.
+    const qTask = svcQueryTask('svc-q-1');
+    const delegTask = svcQueryTask('deleg-1', { kind: 'delegation' });
     const { client } = stubCore({
       listResult: [
-        completedEvent({ event_id: 1, event_kind: 'failed' }),      // skipped
-        completedEvent({ event_id: 2, task_id: 'svc-q-1' }),        // delivered
+        completedEvent({ event_id: 1, event_kind: 'failed', task_id: 'deleg-1' }), // skipped
+        completedEvent({ event_id: 2, task_id: 'svc-q-1' }),                        // delivered
       ],
-      tasks: new Map([['svc-q-1', task]]),
+      tasks: new Map([['svc-q-1', qTask], ['deleg-1', delegTask]]),
     });
     const events: Array<{ id: number; outcome: string }> = [];
     const c = new WorkflowEventConsumer({

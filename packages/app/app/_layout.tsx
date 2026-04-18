@@ -6,10 +6,40 @@
  */
 
 import '../src/polyfills';
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { Tabs } from 'expo-router';
 import { Platform, View, Text, StyleSheet } from 'react-native';
 import { colors, fonts } from '../src/theme';
+import { useNodeBootstrap } from '../src/hooks/useNodeBootstrap';
+import { useIsUnlocked } from '../src/hooks/useUnlock';
+import type { BootDegradation } from '../src/services/boot_service';
+import {
+  subscribeRuntimeWarnings,
+  getRuntimeWarnings,
+  type RuntimeWarning,
+} from '../src/services/runtime_warnings';
+
+/**
+ * Degradation codes that mean "this node cannot serve provider-role
+ * traffic yet."
+ *
+ * Review #7 removed `discovery.no_appview` — it's a REQUESTER-side
+ * problem ("my /service searches come back empty"), not a provider
+ * one. A node can publish + serve without local AppView lookup.
+ *
+ * Review #8 added `transport.sendd2d.noop` — without a real D2D
+ * sender, service.response envelopes go to /dev/null, so a provider
+ * profile that looks healthy is actually silently dropping every
+ * reply.
+ */
+const PROVIDER_BLOCKERS: ReadonlySet<string> = new Set([
+  'publisher.stub',
+  'transport.msgbox.missing',
+  'identity.did_key',
+  'execution.no_runner',
+  'persistence.in_memory',
+  'transport.sendd2d.noop',
+]);
 
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   const icons: Record<string, string> = {
@@ -60,8 +90,79 @@ const tabIconStyles = StyleSheet.create({
 });
 
 export default function RootLayout() {
+  // `useIsUnlocked` subscribes to the unlock module's transition events
+  // so the boot hook re-runs when the user unlocks after first paint —
+  // no longer gated on a navigation remount (issue #12). `enabled:
+  // false` cleanly skips the effect while we wait.
+  const unlocked = useIsUnlocked();
+  // Explicit demo-mode toggle: reads the Expo public env var and
+  // passes it through to the composer. Default off so a production
+  // build never picks up Bus 42 demo state by accident (findings
+  // #1, #15).
+  const demoMode = process.env.EXPO_PUBLIC_DINA_DEMO === '1';
+  const bootState = useNodeBootstrap({
+    enabled: unlocked,
+    overrides: { demoMode },
+  });
+
+  // Hide the tab tree when boot failed — rendering it anyway means every
+  // screen tries to read Core globals that were never installed and
+  // throws a fresh error per tab. Issue #15.
+  const showTabs = bootState.status !== 'error';
+
+  // Gate the provider-facing tabs (Approvals + Service Sharing) on
+  // BOTH role AND blockers (review #16). A requester-only node is
+  // deliberately not a provider, so inviting the user into Approvals
+  // is a dead-end flow.
+  const runningAsProvider =
+    bootState.node !== null &&
+    (bootState.node.role === 'provider' || bootState.node.role === 'both');
+  const providerBlocked = bootState.degradations.some((d) => PROVIDER_BLOCKERS.has(d.code));
+  const showProviderTabs = runningAsProvider && !providerBlocked;
+
+  // Live-subscribe to runtime warnings so async ServicePublisher
+  // failures surface in the banner without a remount (review #15).
+  const runtimeWarnings = useSyncExternalStore(
+    subscribeRuntimeWarnings,
+    getRuntimeWarnings,
+    getRuntimeWarnings,
+  );
+
   return (
-    <Tabs
+    <View style={{ flex: 1 }}>
+      {bootState.status === 'error' ? (
+        <BootBanner
+          kind="error"
+          primary="Dina failed to start."
+          details={[
+            bootState.error?.message ?? 'Unknown error',
+            // Review #5: include the degradations the hook preserved
+            // via BootStartupError so the operator can see WHICH
+            // missing piece triggered the failure. Previously only
+            // error.message rendered and the partial list was lost.
+            ...formatDegradations(bootState.degradations),
+          ]}
+        />
+      ) : bootState.status === 'booting' ? (
+        <BootBanner
+          kind="info"
+          primary="Starting Dina…"
+          details={['Loading identity + runtime']}
+        />
+      ) : bootState.degradations.length > 0 || runtimeWarnings.length > 0 ? (
+        <BootBanner
+          kind="warning"
+          primary={bootState.degradations.length > 0
+            ? 'Dina running in dev-degraded mode.'
+            : 'Runtime warnings active.'}
+          details={[
+            ...formatDegradations(bootState.degradations),
+            ...formatRuntimeWarnings(runtimeWarnings),
+          ]}
+        />
+      ) : null}
+      {showTabs ? (
+      <Tabs
       screenOptions={{
         headerShown: true,
         headerStyle: {
@@ -126,6 +227,10 @@ export default function RootLayout() {
         options={{
           title: 'Approvals',
           tabBarIcon: ({ focused }) => <TabIcon name="Approvals" focused={focused} />,
+          // Hide when the node can't actually handle inbound provider
+          // traffic yet (finding #12). `href: null` removes it from the
+          // tab bar without unmounting the route.
+          href: showProviderTabs ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -140,9 +245,75 @@ export default function RootLayout() {
         options={{
           title: 'Service Sharing',
           // Hidden from the tab bar — reached via drill-down from Settings.
+          // Also hidden entirely when the node isn't provider-capable so
+          // the drill-down target doesn't expose a dead-end flow.
           href: null,
         }}
       />
-    </Tabs>
+      </Tabs>
+      ) : null}
+    </View>
   );
 }
+
+function BootBanner({
+  kind,
+  primary,
+  details,
+}: {
+  kind: 'info' | 'warning' | 'error';
+  primary: string;
+  /** One line per entry. Comma-joined single-line form dropped a lot
+   *  of actionable context (finding #13). */
+  details: string[];
+}) {
+  const bg =
+    kind === 'error' ? '#FDE8E8'
+    : kind === 'warning' ? '#FFF4DB'
+    : '#EBF4FF';
+  const border =
+    kind === 'error' ? '#DC2626'
+    : kind === 'warning' ? '#D97706'
+    : '#2563EB';
+  return (
+    <View style={[bannerStyles.wrap, { backgroundColor: bg, borderBottomColor: border }]}>
+      <Text style={bannerStyles.primary}>{primary}</Text>
+      {details.map((line, i) => (
+        <Text key={i} style={bannerStyles.secondary}>{line}</Text>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Render each degradation as its own bullet line:
+ *   "• code: message"
+ * The code is useful for copy/paste into bug reports; the message is
+ * the operator-actionable explanation.
+ */
+function formatDegradations(list: BootDegradation[]): string[] {
+  return list.map((d) => `\u2022 ${d.code}: ${d.message}`);
+}
+
+function formatRuntimeWarnings(list: RuntimeWarning[]): string[] {
+  return list.map((w) => `\u26A0 ${w.code}: ${w.message}`);
+}
+
+const bannerStyles = StyleSheet.create({
+  wrap: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 2,
+  },
+  primary: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textPrimary,
+  },
+  secondary: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 2,
+    lineHeight: 15,
+  },
+});

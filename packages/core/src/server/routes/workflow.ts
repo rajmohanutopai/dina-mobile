@@ -57,6 +57,7 @@ export function registerWorkflowRoutes(router: CoreRouter): void {
     }));
   router.get('/v1/workflow/events', listEvents);
   router.post('/v1/workflow/events/:id/ack', ackEvent);
+  router.post('/v1/workflow/events/:id/fail', failEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,14 +191,55 @@ async function listEvents(req: CoreRequest): Promise<CoreResponse> {
   const repo = service.store();
   const since = parseUnsignedNumber(req.query.since, 0);
   const limit = clampLimit(parseUnsignedNumber(req.query.limit, 100));
+  // Query-string filter: `needs_delivery=true` → delivery scheduler
+  // hot path (undelivered + due only); any other value → full
+  // audit/diagnostics stream.
+  //
+  // Review #5: previously this passed `Number.MAX_SAFE_INTEGER` as
+  // nowMs which disabled the `next_delivery_at` backoff filter
+  // entirely — every not-yet-due event was surfaced immediately and
+  // the consumer's retry backoff was never honoured.
+  //
+  // Review #7: the `since` filter was applied AFTER the repository
+  // limit, so when the batch exceeded `limit`, recent events could
+  // be hidden behind older undelivered ones. Pushed into the repo so
+  // `since` is applied BEFORE the limit.
   const needsDeliveryOnly = req.query.needs_delivery === 'true';
-  let events;
-  if (needsDeliveryOnly) {
-    events = repo.listUndeliveredEvents(Number.MAX_SAFE_INTEGER, limit).filter((e) => e.at >= since);
-  } else {
-    events = repo.listUndeliveredEvents(Number.MAX_SAFE_INTEGER, limit).filter((e) => e.at >= since);
-  }
+  const nowMs = Date.now();
+  const events = needsDeliveryOnly
+    ? repo.listUndeliveredEvents(nowMs, since, limit)
+    : repo.listAllEventsSince(since, limit);
   return j(200, { events, count: events.length });
+}
+
+/**
+ * POST /v1/workflow/events/:id/fail — consumer negative-ack. The
+ * delivery scheduler pushes `next_delivery_at` out so subsequent
+ * `needs_delivery=true` queries honour backoff instead of spinning
+ * on the same failing event.
+ *
+ * Body: `{ error?: string, next_delivery_at?: number }`. If
+ * `next_delivery_at` is omitted we default to `now + 30s` — a
+ * reasonable floor that still lets Core's own retry cadence win when
+ * it's shorter (review #6).
+ */
+async function failEvent(req: CoreRequest): Promise<CoreResponse> {
+  const service = getWorkflowService();
+  if (service === null) return j(503, { error: 'workflow service not wired' });
+  const id = Number.parseInt(req.params.id ?? '', 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    return j(400, { error: 'event id must be a positive integer' });
+  }
+  const body = (req.body as Record<string, unknown> | undefined) ?? {};
+  const nowMs = Date.now();
+  const nextAtRaw = body.next_delivery_at;
+  const nextAt = typeof nextAtRaw === 'number' && Number.isFinite(nextAtRaw) && nextAtRaw > nowMs
+    ? nextAtRaw
+    : nowMs + 30_000;
+  const repo = service.store();
+  const ok = repo.markEventDeliveryFailed(id, nextAt, nowMs);
+  if (!ok) return j(404, { error: 'event not found' });
+  return j(200, { ok: true, next_delivery_at: nextAt });
 }
 
 async function ackEvent(req: CoreRequest): Promise<CoreResponse> {

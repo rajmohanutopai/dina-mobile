@@ -31,7 +31,15 @@ export interface InboxEntry {
 /** Subset of `BrainCoreClient` the inbox uses — easier to fake in tests. */
 export type InboxCoreClient = Pick<
   BrainCoreClient,
-  'listWorkflowTasks' | 'approveWorkflowTask' | 'cancelWorkflowTask'
+  | 'listWorkflowTasks'
+  | 'approveWorkflowTask'
+  | 'cancelWorkflowTask'
+  | 'getWorkflowTask'
+  // `sendServiceRespond` is used by denyPending so the requester gets
+  // an `unavailable` D2D. Review #1: the respond already terminates
+  // the approval task, so we only call cancelWorkflowTask as a fallback
+  // when respond failed.
+  | 'sendServiceRespond'
 >;
 
 let client: InboxCoreClient | null = null;
@@ -80,14 +88,50 @@ export async function approvePending(taskId: string): Promise<WorkflowTask> {
 }
 
 /**
- * Deny a pending task with an optional reason. Reason is shown in the
- * emitted `unavailable` D2D service.response so the requester sees why.
+ * Deny a pending task with an optional reason. Mirrors the chat
+ * `/service_deny` handler: send an `unavailable` D2D first (so the
+ * requester sees a real reason instead of timing out), then cancel
+ * the approval task authoritatively. Issue #5.
+ *
+ * The send is best-effort — a failure there still proceeds to cancel;
+ * the cancel is the state change we care about.
  */
 export async function denyPending(
   taskId: string,
   reason = 'denied_by_operator',
 ): Promise<WorkflowTask> {
-  return requireClient().cancelWorkflowTask(taskId, reason);
+  const core = requireClient();
+  const denyReason = reason.trim() === '' ? 'denied_by_operator' : reason.trim();
+  // Review #1: `/v1/service/respond` already completes the approval
+  // task. Only fall back to `cancelWorkflowTask` when the respond
+  // itself failed — otherwise we double-terminate and the second
+  // call can surface a false 409 to the operator.
+  try {
+    await core.sendServiceRespond(taskId, {
+      status: 'unavailable',
+      error: denyReason,
+    });
+  } catch {
+    return core.cancelWorkflowTask(taskId, denyReason);
+  }
+  const fresh = await core.getWorkflowTask(taskId);
+  if (fresh === null) {
+    // Task vanished — treat as canceled-equivalent so the UI can
+    // drop it from the inbox.
+    return {
+      id: taskId,
+      kind: 'approval',
+      status: 'canceled',
+      priority: 'normal',
+      description: '',
+      payload: '',
+      result_summary: '',
+      policy: '',
+      created_at: 0,
+      updated_at: 0,
+    };
+  }
+  return fresh;
 }
 
 function requireClient(): InboxCoreClient {

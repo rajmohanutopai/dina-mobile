@@ -39,8 +39,22 @@ function stubClient(init: {
   listError?: Error;
   approveError?: Error;
   cancelError?: Error;
-}): { client: InboxCoreClient; calls: { list: number; approved: string[]; cancelled: Array<{ id: string; reason: string }> } } {
-  const calls = { list: 0, approved: [] as string[], cancelled: [] as Array<{ id: string; reason: string }> };
+  respondError?: Error;
+}): {
+  client: InboxCoreClient;
+  calls: {
+    list: number;
+    approved: string[];
+    cancelled: Array<{ id: string; reason: string }>;
+    responded: Array<{ id: string; body: unknown }>;
+  };
+} {
+  const calls = {
+    list: 0,
+    approved: [] as string[],
+    cancelled: [] as Array<{ id: string; reason: string }>,
+    responded: [] as Array<{ id: string; body: unknown }>,
+  };
   const client: InboxCoreClient = {
     async listWorkflowTasks() {
       calls.list++;
@@ -56,6 +70,16 @@ function stubClient(init: {
       calls.cancelled.push({ id, reason });
       if (init.cancelError) throw init.cancelError;
       return makeTask({ id, status: 'cancelled' });
+    },
+    async sendServiceRespond(id: string, body) {
+      calls.responded.push({ id, body });
+      if (init.respondError) throw init.respondError;
+      return { status: 'sent', taskId: id, alreadyProcessed: false };
+    },
+    async getWorkflowTask(id: string) {
+      // Review #1: denyPending reads the task back after a successful
+      // respond to surface its terminal status to the UI.
+      return makeTask({ id, status: 'completed' });
     },
   };
   return { client, calls };
@@ -92,6 +116,7 @@ describe('useServiceInbox', () => {
       listWorkflowTasks: listSpy,
       approveWorkflowTask: jest.fn(),
       cancelWorkflowTask: jest.fn(),
+      sendServiceRespond: jest.fn(),
     } as unknown as InboxCoreClient);
     await listPendingApprovals(7);
     expect(listSpy).toHaveBeenCalledWith({
@@ -141,14 +166,36 @@ describe('useServiceInbox', () => {
     expect(t.status).toBe('queued');
   });
 
-  it('denyPending passes the reason through; defaults to denied_by_operator', async () => {
+  it('denyPending sends unavailable and does NOT double-cancel (review #1)', async () => {
     const { client, calls } = stubClient({});
     setInboxCoreClient(client);
     await denyPending('svc-q-1');
     await denyPending('svc-q-2', 'not_allowed');
+    // sendServiceRespond fires for each deny with the matching reason
+    // — requester gets a real unavailable envelope instead of a TTL
+    // timeout.
+    expect(calls.responded).toEqual([
+      { id: 'svc-q-1', body: { status: 'unavailable', error: 'denied_by_operator' } },
+      { id: 'svc-q-2', body: { status: 'unavailable', error: 'not_allowed' } },
+    ]);
+    // Review #1: /v1/service/respond ALREADY terminates the approval
+    // task. cancelWorkflowTask is only the fallback when respond
+    // failed — calling it unconditionally was the double-terminate
+    // bug. Happy path has zero cancel calls.
+    expect(calls.cancelled).toEqual([]);
+  });
+
+  it('denyPending still cancels when the unavailable send throws', async () => {
+    // Mirrors the chat /service_deny handler's contract: the send is
+    // best-effort, cancel is authoritative.
+    const { client, calls } = stubClient({
+      respondError: new Error('ECONNRESET'),
+    });
+    setInboxCoreClient(client);
+    await denyPending('svc-q-stuck');
+    expect(calls.responded).toHaveLength(1);
     expect(calls.cancelled).toEqual([
-      { id: 'svc-q-1', reason: 'denied_by_operator' },
-      { id: 'svc-q-2', reason: 'not_allowed' },
+      { id: 'svc-q-stuck', reason: 'denied_by_operator' },
     ]);
   });
 

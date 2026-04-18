@@ -9,6 +9,7 @@ module.exports = {
     '^@dina/test-harness/(.*)$': '<rootDir>/../test-harness/src/$1',
     '^react-native$': '<rootDir>/__mocks__/react-native.ts',
     '^react-native-keychain$': '<rootDir>/__mocks__/react-native-keychain.ts',
+    '^expo-file-system$': '<rootDir>/__mocks__/expo-file-system.ts',
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],

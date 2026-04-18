@@ -16,6 +16,7 @@
 
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { MAX_SERVICE_TTL } from '../../../core/src/d2d/families';
 import type {
   AppViewClient,
   SearchServicesParams,
@@ -56,6 +57,29 @@ export interface IssueQueryRequest {
 }
 
 /**
+ * Inputs to `issueQueryToDID` — dispatch a service.query to a SPECIFIC
+ * provider the caller already picked. This is what the `query_service`
+ * LLM tool uses: the model chose an operator_did (and optionally
+ * pinned a schema_hash) in a prior turn and wants Core to send the
+ * query to exactly that DID. No AppView re-search, no ranker override.
+ * Issue #7, #8.
+ */
+export interface IssueQueryToDIDRequest {
+  /** Target provider DID (required — this is the whole point). */
+  toDID: string;
+  capability: string;
+  params: unknown;
+  /** Override the capability default TTL. */
+  ttlSeconds?: number;
+  /** Schema-version pin from AppView search. Forwarded verbatim. */
+  schemaHash?: string;
+  /** Display label for audit/telemetry. Defaults to the DID. */
+  serviceName?: string;
+  /** Tag for telemetry — e.g. "ask", "chat", "scheduled". */
+  originChannel?: string;
+}
+
+/**
  * Synchronous outcome of `issueQuery`. Note this is the **dispatch** result,
  * not the response — the response arrives later via a workflow event.
  */
@@ -87,6 +111,7 @@ export class ServiceOrchestratorError extends Error {
     readonly code:
       | 'capability_required'
       | 'params_required'
+      | 'to_did_required'
       | 'no_candidate'
       | 'send_failed',
   ) {
@@ -193,15 +218,100 @@ export class ServiceQueryOrchestrator {
     };
   }
 
-  private pickTtl(req: IssueQueryRequest): number {
-    if (
-      typeof req.ttlSeconds === 'number' &&
-      Number.isFinite(req.ttlSeconds) &&
-      req.ttlSeconds > 0
-    ) {
-      return req.ttlSeconds;
+  /**
+   * Dispatch a service.query to an EXPLICIT provider DID. No AppView
+   * re-search, no candidate ranker. Used by the `query_service` LLM
+   * tool (which gets `operator_did` from a prior `search_public_services`
+   * tool call and forwards the model's choice verbatim).
+   *
+   * Issue #7/#8: this is the path that enforces "ask Bob's transit
+   * service" instead of silently substituting whoever happens to rank
+   * first today.
+   */
+  async issueQueryToDID(
+    req: IssueQueryToDIDRequest,
+  ): Promise<IssueQueryResult> {
+    if (!req.capability) {
+      throw new ServiceOrchestratorError(
+        'capability is required',
+        'capability_required',
+      );
     }
-    return getTTL(req.capability);
+    if (req.params === undefined || req.params === null) {
+      throw new ServiceOrchestratorError(
+        'params is required',
+        'params_required',
+      );
+    }
+    if (!req.toDID) {
+      throw new ServiceOrchestratorError(
+        'toDID is required',
+        'to_did_required',
+      );
+    }
+
+    const ttlSeconds = this.pickTtlRaw(req.ttlSeconds, req.capability);
+    const queryId = this.generateQueryId();
+
+    let sendResult: SendServiceQueryResult;
+    try {
+      sendResult = await this.core.sendServiceQuery({
+        toDID: req.toDID,
+        capability: req.capability,
+        params: req.params,
+        queryId,
+        ttlSeconds,
+        serviceName: req.serviceName ?? req.toDID,
+        originChannel: req.originChannel,
+        schemaHash:
+          req.schemaHash !== undefined && req.schemaHash !== ''
+            ? req.schemaHash
+            : undefined,
+      });
+    } catch (err) {
+      throw new ServiceOrchestratorError(
+        `failed to send service.query: ${(err as Error).message ?? String(err)}`,
+        'send_failed',
+      );
+    }
+
+    return {
+      queryId: sendResult.queryId || queryId,
+      taskId: sendResult.taskId,
+      toDID: req.toDID,
+      serviceName: req.serviceName ?? req.toDID,
+      deduped: sendResult.deduped,
+    };
+  }
+
+  private pickTtl(req: IssueQueryRequest): number {
+    return this.pickTtlRaw(req.ttlSeconds, req.capability);
+  }
+
+  private pickTtlRaw(
+    override: number | undefined,
+    capability: string,
+  ): number {
+    // Client-side validation matches Core's `/v1/service/query` rule:
+    // 1 <= ttl_seconds <= MAX_SERVICE_TTL. Previously the orchestrator
+    // accepted any positive integer and let Core reject it — which
+    // meant invalid TTLs (e.g. 10_000_000 from a buggy LLM tool call)
+    // went all the way through the agentic loop before failing at the
+    // Core boundary, wasting tokens + a request ID. Review #20.
+    if (override !== undefined) {
+      if (
+        !Number.isFinite(override) ||
+        !Number.isInteger(override) ||
+        override < 1 ||
+        override > MAX_SERVICE_TTL
+      ) {
+        throw new Error(
+          `ServiceQueryOrchestrator: ttl_seconds override must be an integer in [1, ${MAX_SERVICE_TTL}] (got ${override})`,
+        );
+      }
+      return override;
+    }
+    return getTTL(capability);
   }
 }
 

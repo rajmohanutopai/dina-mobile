@@ -65,7 +65,7 @@ export class QueryWindow {
    * @param ttlMs Time-to-live in milliseconds.
    */
   open(peerDID: string, queryID: string, capability: string, ttlMs: number): void {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     this.entries.set(key, {
       capability,
       expiresAt: this.nowFn() + ttlMs,
@@ -82,7 +82,7 @@ export class QueryWindow {
    * `service.response` sends from both passing the gate.
    */
   reserve(peerDID: string, queryID: string, capability: string): boolean {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     const entry = this.entries.get(key);
     if (
       !entry ||
@@ -102,7 +102,7 @@ export class QueryWindow {
    * capability does not match.
    */
   commit(peerDID: string, queryID: string, capability: string): void {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     const entry = this.entries.get(key);
     if (entry && entry.reserved && entry.capability === capability) {
       this.entries.delete(key);
@@ -114,7 +114,7 @@ export class QueryWindow {
    * pipeline fails before enqueue. The entry becomes eligible for retry.
    */
   release(peerDID: string, queryID: string, capability: string): void {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     const entry = this.entries.get(key);
     if (entry && entry.reserved && entry.capability === capability) {
       entry.reserved = false;
@@ -131,7 +131,7 @@ export class QueryWindow {
    * connection.
    */
   checkAndConsume(peerDID: string, queryID: string, capability: string): boolean {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     const entry = this.entries.get(key);
     if (!entry || this.isExpired(entry) || entry.capability !== capability) {
       return false;
@@ -152,7 +152,7 @@ export class QueryWindow {
    * pre-flight gate without burning the one-shot authorisation.
    */
   peek(peerDID: string, queryID: string, capability: string): boolean {
-    const key = windowKey(peerDID, queryID);
+    const key = windowKey(peerDID, queryID, capability);
     const entry = this.entries.get(key);
     if (!entry || this.isExpired(entry) || entry.capability !== capability) {
       return false;
@@ -215,9 +215,13 @@ export class QueryWindow {
 }
 
 /**
- * Compose the map key for `(peerDID, queryID)`. Uses a separator that cannot
- * appear inside a DID or a UUID-shaped query ID, so the pair is unambiguous.
+ * Compose the map key for `(peerDID, queryID, capability)`. Including
+ * capability in the key (issue #20) prevents collisions when a requester
+ * reuses the same queryID against two different capabilities on the
+ * same peer — e.g. `eta_query` and `status_query` with query_id="42".
+ * The NUL byte separator cannot appear in any of the three fields
+ * (DIDs, UUID-shaped query IDs, and capability names are all ASCII).
  */
-function windowKey(peerDID: string, queryID: string): string {
-  return `${peerDID}\x00${queryID}`;
+function windowKey(peerDID: string, queryID: string, capability: string): string {
+  return `${peerDID}\x00${queryID}\x00${capability}`;
 }

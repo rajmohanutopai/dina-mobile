@@ -92,16 +92,32 @@ export function getAllMemories(): Memory[] {
   return [...memories].reverse();
 }
 
-/** Get memory count. */
+/**
+ * Get memory count.
+ *
+ * LEGACY API. Since /remember now routes through Brain's staging
+ * ingest (see brain/src/chat/orchestrator.ts), nothing in the live
+ * UI calls `addMemory` anymore — this counter is stuck at 0 unless
+ * legacy callers exist. The real "how many memories" number lives
+ * in Core's vault + staging tables and needs a dedicated endpoint
+ * (not yet wired). UI code should hide the chip when this returns 0
+ * rather than show a misleading zero. Issue #10 tracking.
+ */
 export function getMemoryCount(): number {
   return memories.length;
 }
 
 /** Get memories with upcoming reminders. */
 export function getUpcomingReminders(): Memory[] {
-  const now = new Date().toISOString();
+  // Review #19: `reminder_date` is stored as `YYYY-MM-DD`. Comparing
+  // it against `new Date().toISOString()` (which is
+  // `YYYY-MM-DDTHH:MM:SS.sssZ`) sorted today as already past because
+  // `"2026-04-18" < "2026-04-18T14:30:00.000Z"`. Compare against the
+  // local YYYY-MM-DD prefix so "today" is treated as upcoming until
+  // the day actually ends.
+  const today = formatLocalDate(new Date());
   return memories
-    .filter(m => m.reminder_date && m.reminder_date >= now)
+    .filter(m => m.reminder_date !== null && m.reminder_date >= today)
     .sort((a, b) => (a.reminder_date! > b.reminder_date! ? 1 : -1));
 }
 

@@ -23,7 +23,10 @@ import { addDinaResponse, type ChatMessage } from '../../../brain/src/chat/threa
 
 export type DeliveryCoreClient = Pick<
   BrainCoreClient,
-  'listWorkflowEvents' | 'acknowledgeWorkflowEvent' | 'getWorkflowTask'
+  | 'listWorkflowEvents'
+  | 'acknowledgeWorkflowEvent'
+  | 'getWorkflowTask'
+  | 'failWorkflowEventDelivery'
 >;
 
 export interface ThreadDeliveryOptions {

@@ -413,21 +413,26 @@ function completeMatchingServiceQueryTask(
     /* malformed payload — tolerate; serviceName defaults to '' */
   }
 
-  // Parse the body JSON for `response_status` and the full result. The
-  // body was already validated by the ingress-bypass decision layer, so a
-  // second parse here is cheap + safe.
+  // Parse the body JSON for `response_status`, `error`, and the full
+  // result. The body was already validated by the ingress-bypass decision
+  // layer, so a second parse here is cheap + safe.
   let responseStatus = 'success';
+  let errorText: string | undefined;
   try {
-    const parsed = JSON.parse(raw.body) as { status?: string };
+    const parsed = JSON.parse(raw.body) as { status?: string; error?: string };
     if (typeof parsed.status === 'string') responseStatus = parsed.status;
+    if (typeof parsed.error === 'string') errorText = parsed.error;
   } catch {
     /* body shouldn't be unparseable at this point; default response_status */
   }
 
+  // Carry `error` on event details so the consumer-side formatter can
+  // surface a meaningful message instead of a generic fallback (issue #12).
   const eventDetails = JSON.stringify({
     response_status: responseStatus,
     capability: body.capability,
     service_name: serviceName,
+    error: errorText,
   });
   service.store().completeWithDetails(
     task.id,

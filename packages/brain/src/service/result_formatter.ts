@@ -55,7 +55,14 @@ export function formatServiceQueryResult(details: ServiceQueryEventDetails): str
     return formatter(details, serviceName);
   }
   if (status === 'unavailable') {
-    return `${serviceName} — service unavailable.`;
+    // Issue #12: surface the reason when the provider supplied one
+    // (e.g. 'approval_expired', 'not_on_route'). Generic fallback
+    // preserves prior behaviour for providers that sent no reason.
+    const reason =
+      typeof details.error === 'string' && details.error !== ''
+        ? ` (${details.error})`
+        : '';
+    return `${serviceName} — service unavailable${reason}.`;
   }
   if (status === 'error') {
     const errText =

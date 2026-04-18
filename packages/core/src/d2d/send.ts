@@ -21,7 +21,13 @@ import {
   MsgTypeServiceResponse,
 } from './families';
 import { appendAudit } from '../audit/service';
-import { deliverMessage, type ServiceType, type DeliveryResult, type SenderIdentity } from '../transport/delivery';
+import {
+  deliverMessage,
+  getWSDeliverFn,
+  type ServiceType,
+  type DeliveryResult,
+  type SenderIdentity,
+} from '../transport/delivery';
 import { enqueueMessage } from '../transport/outbox';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -173,9 +179,29 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
     body: req.body,
   };
 
-  // 3 + 4. Sign + seal
-  const payload = sealMessage(message, req.senderPrivateKey, req.recipientPublicKey);
-  const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+  // 3 + 4 + 5. Sign + seal + deliver — all inside the single try so a
+  // crypto / encoding failure takes the same never-throws path as a
+  // network failure (review #1). Previously `sealMessage` ran OUTSIDE
+  // the try, so a bad recipient pubkey or encoding error threw past
+  // the caller's "never throws" contract AND left the requester /
+  // provider window reservation in place with no release.
+  let payloadBytes: Uint8Array;
+  try {
+    const payload = sealMessage(message, req.senderPrivateKey, req.recipientPublicKey);
+    payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+  } catch (err) {
+    // Seal / encoding failed: release any reservation we opened above,
+    // then return a denied result (nothing to queue — we can't even
+    // ship the bytes downstream).
+    releaseProviderReservation(providerReservation);
+    appendAudit(req.senderDID, 'd2d_send_denied', req.recipientDID,
+      `type=${req.messageType} denied_at=seal_failed error=${err instanceof Error ? err.message : 'unknown'}`);
+    return {
+      sent: false, messageId, delivered: false, buffered: false, queued: false,
+      deniedAt: 'seal_failed',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 
   // 5. Deliver
   try {
@@ -183,6 +209,28 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
       did: req.senderDID,
       privateKey: req.senderPrivateKey,
     };
+    // WS-first for DinaMsgBox-routed recipients (issue #14). When the
+    // home node holds an authenticated WebSocket to MsgBox, push the
+    // envelope down that connection — it avoids a fresh TLS handshake
+    // per message and reuses the long-lived signed session.
+    // `sendD2DViaWS` takes plaintext + recipient pub (it seals + signs
+    // internally, matching the format POST /forward would have produced).
+    // On WS failure (session down / backpressure) we fall through to
+    // the HTTP `/forward` path in `deliverMessage`.
+    const wsDeliverFn = getWSDeliverFn();
+    if (
+      req.serviceType === 'DinaMsgBox' &&
+      wsDeliverFn !== null &&
+      wsDeliverFn(req.recipientDID, req.recipientPublicKey, message as unknown as Record<string, unknown>)
+    ) {
+      appendAudit(req.senderDID, 'd2d_send', req.recipientDID,
+        `type=${req.messageType} id=${messageId} delivered=true via=ws`);
+      commitProviderReservation(providerReservation);
+      return {
+        sent: true, messageId,
+        delivered: true, buffered: false, queued: false,
+      };
+    }
     const delivery = await deliverMessage(
       req.recipientDID, payloadBytes, req.serviceType, req.endpoint,
       senderIdentity,
@@ -204,9 +252,18 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
 
     // Delivery failed but didn't throw — queue for retry.
     releaseProviderReservation(providerReservation);
-    try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
+    const queueResult = tryEnqueue(req.recipientDID, payloadBytes);
+    const deliveryErrorMsg = delivery.error ?? 'delivery_failed';
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
-      `type=${req.messageType} id=${messageId} error=${delivery.error ?? 'delivery_failed'}`);
+      `type=${req.messageType} id=${messageId} error=${deliveryErrorMsg} queued=${queueResult.queued}${queueResult.queued ? '' : ' queue_error=' + (queueResult.error ?? 'unknown')}`);
+    if (!queueResult.queued) {
+      // Outbox full / write error: do NOT lie about queued status. The
+      // caller needs to know the message was lost (review #2).
+      return {
+        sent: true, messageId, delivered: false, buffered: false, queued: false,
+        error: `${deliveryErrorMsg}; queue_failed: ${queueResult.error ?? 'unknown'}`,
+      };
+    }
     return {
       sent: true, messageId, delivered: false, buffered: false, queued: true,
       error: delivery.error,
@@ -214,13 +271,40 @@ export async function sendD2D(req: SendRequest): Promise<SendResult> {
   } catch (err) {
     // 6. Network failure → queue in outbox
     releaseProviderReservation(providerReservation);
-    try { enqueueMessage(req.recipientDID, payloadBytes); } catch { /* queue full */ }
-
+    const queueResult = tryEnqueue(req.recipientDID, payloadBytes);
+    const errMsg = err instanceof Error ? err.message : String(err);
     appendAudit(req.senderDID, 'd2d_send_queued', req.recipientDID,
-      `type=${req.messageType} id=${messageId} error=${err instanceof Error ? err.message : 'unknown'}`);
+      `type=${req.messageType} id=${messageId} error=${errMsg} queued=${queueResult.queued}${queueResult.queued ? '' : ' queue_error=' + (queueResult.error ?? 'unknown')}`);
 
+    if (!queueResult.queued) {
+      return {
+        sent: true, messageId, delivered: false, buffered: false, queued: false,
+        error: `${errMsg}; queue_failed: ${queueResult.error ?? 'unknown'}`,
+      };
+    }
     return {
       sent: true, messageId, delivered: false, buffered: false, queued: true,
+      error: errMsg,
+    };
+  }
+}
+
+/**
+ * Attempt to enqueue a message in the outbox. Never throws — returns
+ * the actual outcome so the send path can propagate "queue full" as a
+ * real failure instead of silently reporting `queued: true` (review
+ * #2: both failure branches used to swallow `enqueueMessage` errors).
+ */
+function tryEnqueue(
+  recipientDID: string,
+  payloadBytes: Uint8Array,
+): { queued: true } | { queued: false; error: string } {
+  try {
+    enqueueMessage(recipientDID, payloadBytes);
+    return { queued: true };
+  } catch (err) {
+    return {
+      queued: false,
       error: err instanceof Error ? err.message : String(err),
     };
   }

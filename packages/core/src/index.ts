@@ -92,6 +92,16 @@ export type {
   LeaseExpirySweeperOptions,
   LeaseExpirySweepResult,
 } from './workflow/lease_expiry_sweeper';
+export { TaskExpirySweeper } from './workflow/task_expiry_sweeper';
+export type {
+  TaskExpirySweeperOptions,
+  TaskExpirySweepResult,
+} from './workflow/task_expiry_sweeper';
+export { LocalDelegationRunner } from './workflow/local_delegation_runner';
+export type {
+  LocalDelegationRunnerOptions,
+  LocalCapabilityRunner,
+} from './workflow/local_delegation_runner';
 export {
   setServiceQuerySender,
   getServiceQuerySender,
@@ -211,7 +221,28 @@ export * from './relay/rpc_envelope';
 export type { CoreRPCRequest, CoreRPCResponse } from './relay/rpc_envelope';
 export * from './relay/rpc_response';
 export * from './relay/identity_binding';
-export * from './relay/msgbox_ws';
+// msgbox_ws's isAuthenticated collides with sync/client's; disambiguate
+// by renaming the relay one so both remain reachable from the package
+// index without an ambiguous `export *` collision.
+export {
+  setIdentity as setMsgBoxIdentity,
+  setWSFactory,
+  connectToMsgBox,
+  disconnect as disconnectMsgBox,
+  isConnected as isMsgBoxConnected,
+  isAuthenticated as isMsgBoxAuthenticated,
+  sendEnvelope,
+  completeHandshake,
+  resetConnectionState as resetMsgBoxConnectionState,
+  onD2DMessage,
+  onRPCRequest,
+  onRPCCancel,
+  buildHandshakePayload,
+  computeReconnectDelay,
+  signHandshake,
+  getIdentity as getMsgBoxIdentity,
+} from './relay/msgbox_ws';
+export type { MsgBoxEnvelope, EnvelopeHandler, WSFactory, WSLike } from './relay/msgbox_ws';
 export * from './relay/msgbox_forward';
 export type { ForwardHeaders } from './relay/msgbox_forward';
 export * from './process/model';

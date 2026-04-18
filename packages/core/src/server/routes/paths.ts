@@ -109,6 +109,33 @@ export const EXPORT = '/v1/export';
 export const IMPORT = '/v1/import';
 
 // ---------------------------------------------------------------
+// Workflow
+// ---------------------------------------------------------------
+
+export const WORKFLOW_TASKS = '/v1/workflow/tasks';
+export const WORKFLOW_TASKS_CLAIM = '/v1/workflow/tasks/claim';
+/** `:id` suffixes for per-task endpoints. Interpolate with the actual id. */
+export const WORKFLOW_TASK = (id: string): string => `/v1/workflow/tasks/${id}`;
+export const WORKFLOW_TASK_HEARTBEAT = (id: string): string => `/v1/workflow/tasks/${id}/heartbeat`;
+export const WORKFLOW_TASK_PROGRESS = (id: string): string => `/v1/workflow/tasks/${id}/progress`;
+export const WORKFLOW_TASK_APPROVE = (id: string): string => `/v1/workflow/tasks/${id}/approve`;
+export const WORKFLOW_TASK_CANCEL = (id: string): string => `/v1/workflow/tasks/${id}/cancel`;
+export const WORKFLOW_TASK_COMPLETE = (id: string): string => `/v1/workflow/tasks/${id}/complete`;
+export const WORKFLOW_TASK_FAIL = (id: string): string => `/v1/workflow/tasks/${id}/fail`;
+
+export const WORKFLOW_EVENTS = '/v1/workflow/events';
+export const WORKFLOW_EVENT_ACK = (id: number | string): string => `/v1/workflow/events/${id}/ack`;
+export const WORKFLOW_EVENT_FAIL = (id: number | string): string => `/v1/workflow/events/${id}/fail`;
+
+// ---------------------------------------------------------------
+// Service (requester-side query + provider-side respond)
+// ---------------------------------------------------------------
+
+export const SERVICE_QUERY = '/v1/service/query';
+export const SERVICE_RESPOND = '/v1/service/respond';
+export const SERVICE_CONFIG = '/v1/service/config';
+
+// ---------------------------------------------------------------
 // User-facing API
 // ---------------------------------------------------------------
 

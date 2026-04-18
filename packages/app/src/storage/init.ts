@@ -21,10 +21,25 @@ import { setAuditRepository, SQLiteAuditRepository } from '../../../core/src/aud
 import { setDeviceRepository, SQLiteDeviceRepository } from '../../../core/src/devices/repository';
 import { setStagingRepository, SQLiteStagingRepository } from '../../../core/src/staging/repository';
 import { setVaultRepository, SQLiteVaultRepository } from '../../../core/src/vault/repository';
-import * as FileSystem from 'expo-file-system';
+import {
+  setChatMessageRepository,
+  SQLiteChatMessageRepository,
+} from '../../../core/src/chat/repository';
+import type { DatabaseAdapter } from '../../../core/src/storage/db_adapter';
+// Expo 55 moved the document-directory constant behind `Paths.document` (a
+// `Directory` object exposing `.uri`). The legacy flat `documentDirectory`
+// export now lives under `expo-file-system/legacy` — we use it here because
+// op-sqlite's `location` parameter takes a raw string directory URI.
+import { Paths } from 'expo-file-system';
 
 /** The active provider. */
 let provider: ProductionDBProvider | null = null;
+/**
+ * The open identity database adapter, cached for consumers like
+ * `boot_capabilities` that need to feed it to `bootAppNode` as the
+ * workflow + service-config durable store. Reset to `null` on shutdown.
+ */
+let identityAdapter: DatabaseAdapter | null = null;
 
 /**
  * Initialize all persistence after identity unlock.
@@ -38,8 +53,11 @@ export async function initializePersistence(
   masterSeed: Uint8Array,
   userSalt: Uint8Array,
 ): Promise<void> {
-  // Use Expo's document directory for database storage
-  const dbDir = FileSystem.documentDirectory ?? '';
+  // Use Expo's document directory for database storage. `Paths.document`
+  // returns a `Directory` whose `.uri` is a `file://…/` string — op-sqlite
+  // wants a raw filesystem path without the scheme prefix.
+  const docUri = Paths.document.uri;
+  const dbDir = docUri.startsWith('file://') ? docUri.slice('file://'.length) : docUri;
 
   // Lazy import op-sqlite (native module, not available in tests)
   const { open } = require('@op-engineering/op-sqlite');
@@ -53,6 +71,7 @@ export async function initializePersistence(
 
   // Open identity DB + apply migrations
   const identityDB = bootstrapPersistence(provider);
+  identityAdapter = identityDB;
 
   // Wire all identity-scoped repositories
   setKVRepository(new SQLiteKVRepository(identityDB));
@@ -61,6 +80,22 @@ export async function initializePersistence(
   setAuditRepository(new SQLiteAuditRepository(identityDB));
   setDeviceRepository(new SQLiteDeviceRepository(identityDB));
   setStagingRepository(new SQLiteStagingRepository(identityDB));
+  setChatMessageRepository(new SQLiteChatMessageRepository(identityDB));
+}
+
+/**
+ * Get the open identity DatabaseAdapter — `null` when persistence hasn't
+ * been initialized yet (pre-unlock, or running in a test harness that
+ * doesn't boot op-sqlite). `boot_capabilities` reads this to decide
+ * between SQLite and in-memory workflow repositories.
+ */
+export function getIdentityAdapter(): DatabaseAdapter | null {
+  return identityAdapter;
+}
+
+/** True when initializePersistence has run successfully. */
+export function isPersistenceReady(): boolean {
+  return identityAdapter !== null;
 }
 
 /**
@@ -83,4 +118,5 @@ export function openPersonaDB(persona: string): void {
 export function shutdownAllPersistence(): void {
   shutdownPersistence();
   provider = null;
+  identityAdapter = null;
 }

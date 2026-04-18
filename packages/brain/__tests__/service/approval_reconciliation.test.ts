@@ -63,7 +63,10 @@ function stubClient(init?: Partial<StubClient>): { client: BrainCoreClient; stat
     async listWorkflowTasks(params: { kind: string; state: string; limit?: number }) {
       state.listCalls.push(params);
       if (state.listError !== null) throw state.listError;
-      return state.listResult;
+      // Reconciler now queries BOTH pending_approval AND queued (issue
+      // #12). Only return the seeded tasks on the first state — keeps
+      // existing tests' count expectations correct.
+      return params.state === 'pending_approval' ? state.listResult : [];
     },
     async sendServiceRespond(taskId: string, body: unknown) {
       state.respondCalls.push({ taskId, body });
@@ -150,7 +153,10 @@ describe('ApprovalReconciler.runTick', () => {
     expect(result.discovered).toBe(3);
     expect(result.sent).toBe(3);
     expect(state.respondCalls.map((c) => c.taskId)).toEqual(['a', 'b', 'c']);
-    expect(state.failCalls.map((c) => c.id)).toEqual(['a', 'b', 'c']);
+    // Issue #13: on successful send, /v1/service/respond already
+    // completed the task, so the reconciler must NOT call
+    // failWorkflowTask (it'd 409 on terminal state).
+    expect(state.failCalls).toEqual([]);
   });
 
   it('sends `unavailable` with `approval_expired` error', async () => {
@@ -231,9 +237,14 @@ describe('ApprovalReconciler.runTick', () => {
     });
 
     await r.runTick();
-    expect(state.listCalls[0].limit).toBe(7);
-    expect(state.listCalls[0].kind).toBe('approval');
+    // Issue #20: batchSize is split across pending_approval + queued
+    // so one tick processes AT MOST batchSize total items. With
+    // batchSize=7, half=3, remaining=4.
+    expect(state.listCalls).toHaveLength(2);
     expect(state.listCalls[0].state).toBe('pending_approval');
+    expect(state.listCalls[0].limit).toBe(3);
+    expect(state.listCalls[1].state).toBe('queued');
+    expect(state.listCalls[1].limit).toBe(4);
   });
 });
 
@@ -249,7 +260,9 @@ describe('ApprovalReconciler.start / stop', () => {
     });
     r.start();
     await r.flush();
-    expect(state.listCalls).toHaveLength(1);
+    // Each tick fires TWO list calls (pending_approval + queued).
+    // Issue #12 — single-state scan missed operator-approved-but-stalled tasks.
+    expect(state.listCalls).toHaveLength(2);
     r.stop();
   });
 
@@ -265,15 +278,16 @@ describe('ApprovalReconciler.start / stop', () => {
     });
     r.start();
     await r.flush();
-    expect(state.listCalls).toHaveLength(1);
-
-    sched.advance(60_000);
-    await r.flush();
+    // 2 list calls per tick (pending_approval + queued).
     expect(state.listCalls).toHaveLength(2);
 
     sched.advance(60_000);
     await r.flush();
-    expect(state.listCalls).toHaveLength(3);
+    expect(state.listCalls).toHaveLength(4);
+
+    sched.advance(60_000);
+    await r.flush();
+    expect(state.listCalls).toHaveLength(6);
     r.stop();
   });
 
@@ -292,9 +306,9 @@ describe('ApprovalReconciler.start / stop', () => {
     await r.flush();
     sched.advance(60_000);
     await r.flush();
-    // Still 2 ticks total (one immediate + one at 60s); if a second
-    // interval had been spawned we'd see 3 or 4.
-    expect(state.listCalls).toHaveLength(2);
+    // 2 ticks × 2 list calls per tick (pending + queued) = 4. A stray
+    // second interval would produce ≥ 6.
+    expect(state.listCalls).toHaveLength(4);
     r.stop();
   });
 
@@ -313,7 +327,7 @@ describe('ApprovalReconciler.start / stop', () => {
     r.stop();
     sched.advance(60_000);
     await r.flush();
-    expect(state.listCalls).toHaveLength(1); // only the immediate tick
+    expect(state.listCalls).toHaveLength(2); // only the immediate tick × 2 states
   });
 
   it('stop is idempotent', () => {
